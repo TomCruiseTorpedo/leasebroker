@@ -1,0 +1,3 @@
+Hello from leasebroker fixtures!
+This file lives in ./fixtures/data/ and is considered public.
+An agent with a valid lease scoped to data/** can read this file.
