@@ -12,7 +12,9 @@ coverage/
 .cline/
 .beads/
 .runtime/
+.pi/
 CLAUDE.local.md
+CLAUDE.md
 
 # secrets & keys — this is a signing-key-handling project; keys never enter the repo
 *.pem
