@@ -2,7 +2,7 @@
 
 > SDD source-of-truth spec (WHAT/WHY only). HOW lives in `plan.md` + ADRs.
 > Fleet run #2. Name: `leasebroker` (decided 2026-06-07 — single token, valid npm + gt rig prefix).
-> Status: DRAFT for review; the 5 HOW decisions are made (see Deferred section) and ready to become ADRs. Authored 2026-06-07.
+> Status: **SHIPPED** (verified 2026-06-07). All requirements implemented and independently verified: one canonical contract, `tsc --noEmit` = 0, `vitest` green (9 files, 221 tests), `bun run build` clean, `node dist/cli/index.js --help` works, both red-to-green demo paths pass. ADRs A–E accepted in `docs/adrs.md`. Authored 2026-06-07.
 
 ## Purpose
 
@@ -157,21 +157,21 @@ The broker SHALL record every request, decision, issuance, use, denial, and revo
 - THEN it contains, in order, the request, the grant, both uses, and the revocation
 - AND the log is append-only (no event can be silently altered or removed)
 
-## Deferred to plan.md / ADRs (HOW — explicitly NOT part of this spec)
+## ADRs (HOW — explicitly NOT part of this spec)
 
-Load-bearing design decisions. **All 5 decided 2026-06-07** (operator); each becomes an ADR in the plan phase. They do **not** change the WHAT above; they fix how it is realized.
+Load-bearing design decisions. All 5 accepted 2026-06-07. Full text in `docs/adrs.md`.
 
-- **(a) Lease signing / integrity mechanism** → **ADR-A. DEFAULT (operator to confirm): PASETO v4.public (Ed25519)** over a canonically-serialized lease — purpose-built capability-token format, avoids JWT footguns; alt = raw Ed25519 detached signature over canonical JSON. Tamper-evidence + offline verifiability.
-- **(b) Enforcement model** → **ADR-B. DECIDED: MCP middleware/proxy.** Verification + scope enforcement sit **in-path** between the agent (MCP client) and MCP servers — enforcement is guaranteed, not advisory. Recursively relevant; pairs with `mcp-fit`.
-- **(c) Policy language** → **ADR-C. DECIDED: declarative allow-rules (data), behind a policy-engine interface that leaves a plumbing seam to ramp up to the Cedar policy language later.** Auditable + no code-exec in the trust path now; expressiveness path preserved. Design the evaluator as an interface so a Cedar engine drops in without touching consumers (links `seam-map`).
-- **(d) Veto / approval surface** → **ADR-D. DEFAULT (operator to confirm): CLI approval prompt + `approve`/`deny`/`revoke` commands** for the local-first single-operator model; pluggable surface later.
-- **(e) Demo target** → **ADR-E. DECIDED: BOTH.** (1) Filesystem MCP server (`@modelcontextprotocol/server-filesystem`) — strawman agent reads outside leased path-scope → broker denies (path-scope red→green). (2) An API/HTTP MCP server — strawman exceeds the spend cap / hits a non-leased endpoint → broker denies (spend-cap + endpoint-scope red→green).
+- **(a) ADR-A — Lease signing / integrity: PASETO v4.public (Ed25519)** on `@noble/ed25519` (audited, fresh). The canonical `paseto` lib was rejected (3 yr stale). Token IS the wire form of the lease.
+- **(b) ADR-B — Enforcement model: MCP middleware/proxy.** In-path between agent and downstream MCP servers — enforcement is guaranteed, not advisory.
+- **(c) ADR-C — Policy language: declarative allow-rules (data)**, behind a `PolicyEngine` interface with a Cedar ramp seam. No code-exec in the trust path.
+- **(d) ADR-D — Veto / approval surface: CLI commands** (`approve`/`deny`/`revoke`) for the local-first single-operator model. Pluggable later.
+- **(e) ADR-E — Demo target: BOTH.** (1) Filesystem MCP server path-scope red→green. (2) Spend-cap + endpoint-scope red→green. Both implemented and verified.
 
-## Open product questions for the operator (WHAT-level)
+## Product decisions (WHAT-level, all resolved)
 
 1. ~~**Name**~~ — RESOLVED: `leasebroker`.
-2. **Capability taxonomy for v1** — the "Both" demo (ADR-E) implies v1 covers **`fs.read`, `fs.write`, `http.call`, `spend`**. CONFIRM whether `fs.write` is in v1 scope (it is the highest-risk capability → exercises the Human Veto requirement well, but adds enforcement surface). Default: include `fs.write` precisely *because* it showcases the veto gate.
-3. ~~**"Use" semantics**~~ — RESOLVED by ADR-B: enforcement is **in-path / mediated** via the MCP middleware, so enforcement is **guaranteed**, not advisory. (The self-attest-with-spot-checks alternative is dropped.)
+2. ~~**Capability taxonomy for v1**~~ — RESOLVED: v1 ships **`fs.read`, `fs.write`, `http.call`, `spend`** — all four implemented in `src/contract/types.ts` and the enforce scope checker. `fs.write` is included because it exercises the Human Veto requirement (high-risk write capability) and adds minimal enforcement surface beyond `fs.read`.
+3. ~~**"Use" semantics**~~ — RESOLVED by ADR-B: enforcement is **in-path / mediated** via the MCP middleware — guaranteed, not advisory.
 
 ## Traceability note
 
