@@ -1,0 +1,23 @@
+# dependencies & build
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# logs & OS
+*.log
+.DS_Store
+
+# agent / fleet runtime + internal SSOT — NEVER commit (hygiene gate, see HANDOVER §5)
+.cline/
+.beads/
+.runtime/
+CLAUDE.local.md
+
+# secrets & keys — this is a signing-key-handling project; keys never enter the repo
+*.pem
+*.key
+keys/
+secrets/
+.env
+.env.*
