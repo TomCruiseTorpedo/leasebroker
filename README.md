@@ -197,4 +197,4 @@ npm run demo        # red→green capability-brokering demo
 
 ## License
 
-Apache-2.0.
+Apache-2.0 — see `LICENSE`.
