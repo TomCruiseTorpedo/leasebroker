@@ -1,0 +1,13 @@
+/**
+ * Audit module barrel.
+ *
+ * Exports the concrete implementations of the audit-lane interfaces.
+ * Consumers should depend on the interfaces from src/contract, not on
+ * these concrete classes — except where construction requires setCap
+ * or other concrete-only methods.
+ */
+
+export { InMemoryAuditSink } from './audit-sink.js';
+export { InMemoryPendingStore } from './pending-store.js';
+export { InMemoryRevocationList } from './revocation-list.js';
+export { InMemorySpendLedger } from './spend-ledger.js';
