@@ -6,6 +6,7 @@ coverage/
 
 # logs & OS
 *.log
+*.tmp
 .DS_Store
 
 # agent / fleet runtime + internal SSOT — NEVER commit (hygiene gate, see HANDOVER §5)
@@ -23,3 +24,4 @@ keys/
 secrets/
 .env
 .env.*
+!.env.example
