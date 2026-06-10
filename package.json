@@ -1,9 +1,15 @@
 {
   "name": "leasebroker",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Local-first broker that issues time-bounded, narrowly-scoped capability leases to AI agents and MCP servers, instead of standing permissions.",
   "type": "module",
   "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "bin": {
     "leasebroker": "dist/cli/index.js"
   },
@@ -14,7 +20,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/cli/index.js",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli/index.js",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
