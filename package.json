@@ -1,7 +1,27 @@
 {
   "name": "leasebroker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first broker that issues time-bounded, narrowly-scoped capability leases to AI agents and MCP servers, instead of standing permissions.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TomCruiseTorpedo/leasebroker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TomCruiseTorpedo/leasebroker/issues"
+  },
+  "homepage": "https://github.com/TomCruiseTorpedo/leasebroker#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agent",
+    "llm",
+    "capability",
+    "least-privilege",
+    "security",
+    "lease",
+    "authorization",
+    "proxy"
+  ],
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
