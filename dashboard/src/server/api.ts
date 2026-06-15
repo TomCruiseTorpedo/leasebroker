@@ -9,11 +9,31 @@
 import { createServerFn } from '@tanstack/react-start';
 // Verified core modules (built via `npm run build` in the leasebroker root).
 import { readDashboard } from '../../../dist/dashboard/read.js';
+import type { DashboardSnapshot } from '../../../dist/dashboard/read.js';
 import { revokeLease, approvePending, denyPending } from '../../../dist/dashboard/actions.js';
+
+/**
+ * A JSON value, and a deep "serializable view" of an arbitrary type.
+ *
+ * TanStack Start statically verifies that a server function's return type is
+ * JSON-serializable. The core contract types an audit event's `detail` as
+ * `Record<string, unknown>`, and `unknown` defeats that static check — even
+ * though the value is always JSON (the audit log is persisted and hash-chained
+ * as JSON). `Serializable<T>` rewrites those `unknown` slots to `JsonValue`
+ * for the type checker only; the runtime value is unchanged.
+ */
+type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
+type Serializable<T> = unknown extends T
+  ? JsonValue
+  : T extends (infer U)[]
+    ? Serializable<U>[]
+    : T extends object
+      ? { [K in keyof T]: Serializable<T[K]> }
+      : T;
 
 /** Read-only snapshot: derived leases + audit feed + counts + integrity. */
 export const getSnapshot = createServerFn({ method: 'GET' }).handler(() => {
-  return readDashboard();
+  return readDashboard() as Serializable<DashboardSnapshot>;
 });
 
 /** Revoke a lease (operator control action). */
