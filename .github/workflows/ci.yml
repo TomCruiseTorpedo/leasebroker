@@ -33,9 +33,11 @@ jobs:
       - name: Dashboard install
         working-directory: dashboard
         run: npm ci
-      - name: Dashboard typecheck
-        working-directory: dashboard
-        run: npm run typecheck
+      # Build first: the TanStack Start plugin generates the (gitignored)
+      # src/routeTree.gen.ts during build, which typecheck then depends on.
       - name: Dashboard build
         working-directory: dashboard
         run: npm run build
+      - name: Dashboard typecheck
+        working-directory: dashboard
+        run: npm run typecheck
