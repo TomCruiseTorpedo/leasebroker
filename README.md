@@ -14,6 +14,8 @@ npm install leasebroker
 bun add leasebroker
 ```
 
+Requires Node ≥ 20.
+
 Run without installing:
 
 ```bash
@@ -26,7 +28,7 @@ All commands share a `--state-dir <path>` flag (default: `.leasebroker/` in cwd)
 
 ### `leasebroker request`
 
-Submit a lease request. Pass JSON via `--request` or stdin.
+Submit a lease request. Pass JSON via `--request` or stdin. Add `--rules-file <path>` to evaluate against a specific policy file.
 
 ```bash
 leasebroker request --request '{
@@ -39,7 +41,7 @@ leasebroker request --request '{
 }'
 ```
 
-Prints the granted PASETO token (or `reqId` for veto-required, or a denial reason).
+Prints a JSON outcome — `{ type: 'granted', token, leaseId }`, `{ type: 'pending', reqId }` (veto-required), or `{ type: 'denied', reason }` (exits 2).
 
 ### `leasebroker pending`
 
@@ -87,7 +89,7 @@ leasebroker serve \
 leasebroker serve \
   --downstream-cmd node \
   --downstream-args '["./my-mcp-server.js"]' \
-  --policy ./rules.json
+  --rules-file ./rules.json
 ```
 
 Agents present their lease token in `_meta['x-lease-token']` at the MCP `initialize` handshake. All subsequent `tools/call` requests are verified against that bound lease.
@@ -98,10 +100,10 @@ View or load policy rules.
 
 ```bash
 # View current rules
-leasebroker policy
+leasebroker policy show
 
 # Load rules from a JSON file
-leasebroker policy --load ./rules.json
+leasebroker policy load --rules-file ./rules.json
 ```
 
 ### `leasebroker audit`
@@ -112,11 +114,11 @@ View the audit log (hash-chained, append-only).
 # View last 20 events
 leasebroker audit --last 20
 
-# Filter by lease ID
-leasebroker audit --lease-id lease-xyz789
-
 # Filter by event type
 leasebroker audit --type issuance
+
+# Verify hash-chain integrity only (exit code, no output)
+leasebroker audit --verify
 ```
 
 ## Running the Demo
