@@ -16,3 +16,26 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # The dashboard imports the core's COMPILED dist/, so build the core first.
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Dashboard install
+        working-directory: dashboard
+        run: npm ci
+      - name: Dashboard typecheck
+        working-directory: dashboard
+        run: npm run typecheck
+      - name: Dashboard build
+        working-directory: dashboard
+        run: npm run build
