@@ -174,6 +174,25 @@ if (result.type === 'granted') {
 }
 ```
 
+## Dashboard (in development)
+
+> **Status: in development — not yet shipped.** A local governance dashboard lives in [`dashboard/`](dashboard/), but it is **not** part of the published `leasebroker` npm package, and its surface may still change.
+
+A [TanStack Start](https://tanstack.com/start) app for operators: a live leases table, the audit feed, and a pending-approvals panel with revoke / approve / deny actions. It runs entirely against your local state directory and imports the broker's **compiled, verified** read-layer and actions from `dist/` — the same surface a package consumer sees, never the core's TypeScript source.
+
+It builds and runs locally, but treat it as a preview: the core must be built first, and it carries no automated UI tests yet.
+
+```bash
+# 1. Build the core so the dashboard can import dist/
+npm run build
+
+# 2. Install and run the dashboard
+cd dashboard
+npm install
+npm run seed   # optional: write demo state to ./.leasebroker
+npm run dev    # http://localhost:3210
+```
+
 ## Development
 
 ```bash
