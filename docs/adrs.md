@@ -73,3 +73,17 @@ Single-doc ADR log for fleet run #2. Each ADR is load-bearing; consumers trace t
 **Alternatives considered.** fs-only — misses the spend story. Build-our-own server only — less credible than fronting a real MCP server.
 
 **Consequences.** Two fixture lanes. Uses a real MCP server (fs) for credibility; the spend fixture is mocked to stay deterministic and offline (no real API keys / network in CI). Exercises every spec requirement, including spend accumulation and veto.
+
+---
+
+## ADR-F — A2A lease extension: capability attenuation for agent-to-agent delegation
+
+**Status:** Accepted (2026-07-05).
+
+**Context.** A2A v1.0 (Linux Foundation) standardizes agent-to-agent delegation, but its security model carries *standing* credentials (`securitySchemes`: OAuth2, API keys) — nothing attenuates what a delegated agent may DO. That is leasebroker's thesis, one protocol layer up from the MCP proxy (ADR-B). Spec-depth verification (2026-07-05, A2A v1.0.1) confirmed the mechanics: message metadata legally carries arbitrary JSON keyed by an extension URI (§4.6.2); `required:true` card extensions reject unaware clients with `ExtensionSupportRequiredError` (§3.3.4, JSON-RPC `-32008`); `auth-required` is the spec's own human-approval pause (§7.6) with out-of-band resume (§7.6.1). Two constraints shape the design: A2A has NO initialize handshake (the MCP `sessionId → token` binding cannot port — rebind by `contextId`), and the spec mandates no denial terminal state (one must be pinned).
+
+**Decision.** Ship the extension as a **profile doc + SDK-free helpers**: `docs/a2a-lease-extension-v1.md` is the normative profile (versioned URI, declaration, negotiation, carriage, context binding, deny ladder, task-state pins); `src/a2a/` implements it as plain JSON manipulation — extension declaration helper, metadata attach/extract, `A2aLeaseBinding` (contextId → token; conflicting re-binds rejected), and `evaluateA2aLeaseGate` (the deny ladder: extension-support → lease → veto → allow) that reuses `Enforcer.check` (the ADR-B pipeline, byte-for-byte unchanged) and takes veto-pending state as an injected predicate (ADR-D's PendingStore, decoupled). **No A2A protocol client dependency in this repo** — gatewarden (the gateway) owns the wire; leasebroker owns the semantics. A2A gate types live in `src/a2a/`, NOT `src/contract/` — the contract lane is the LEASE contract; the A2A profile is a layer above with its own canonical module.
+
+**Alternatives considered.** `APIKeySecurityScheme{location:"header"}` carriage — transport-idiomatic but fragments per-binding and abandons the extension negotiation gate; kept as a possible parallel lane, not v1. Depending on `@a2a-js/sdk` here — rejected: the SDK is 1.0.0-beta (churning) and the profile needs only JSON shapes; the single re-pin point stays in gatewarden. Binding by `taskId` instead of `contextId` — finer-grained but tasks are born server-side mid-conversation; context is the client-visible unit.
+
+**Consequences.** W4 (gatewarden A2A attach) consumes `evaluateA2aLeaseGate` + the profile as-is. The `rejected`/`auth-required`/`canceled` pins are an interop convention, documented as such. Single-hop protection only (profile §8) — chain-grade delegation is future work. The veto flow gains a protocol-native pause state: `veto-required` now maps to a visible `auth-required` A2A task instead of a bare denial.

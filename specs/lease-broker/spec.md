@@ -157,6 +157,41 @@ The broker SHALL record every request, decision, issuance, use, denial, and revo
 - THEN it contains, in order, the request, the grant, both uses, and the revocation
 - AND the log is append-only (no event can be silently altered or removed)
 
+### Requirement: A2A Lease Extension
+
+The system MUST provide the building blocks for enforcing capability leases
+over A2A v1.0 agent-to-agent delegation, per the normative profile in
+`docs/a2a-lease-extension-v1.md`: extension declaration, token carriage in
+message metadata, context binding, and a deny-by-default gate reusing the
+existing `Enforcer.check` pipeline unchanged. The helpers MUST NOT depend on
+an A2A protocol client (the gateway consumer owns the wire).
+
+#### Scenario: Extension-unaware client rejected at the protocol level
+
+- GIVEN a request whose declared extensions do not include the lease extension URI
+- WHEN the gate evaluates it
+- THEN the decision is `ExtensionSupportRequiredError` (JSON-RPC `-32008`, HTTP 400, gRPC `FAILED_PRECONDITION`)
+- AND no task-level processing occurs
+
+#### Scenario: Missing or invalid lease rejects the task
+
+- GIVEN a declaring client whose message carries no token (and whose context has none bound), or a token the enforcer rejects
+- WHEN the gate evaluates it
+- THEN the decision is task state `rejected` with the enforcement reason
+
+#### Scenario: Context binding is sticky and conflict-safe
+
+- GIVEN a context whose first message bound lease token T1
+- WHEN a later message in the same context omits the token
+- THEN the gate enforces against T1
+- AND a later message presenting a DIFFERENT token T2 is rejected
+
+#### Scenario: Pending veto pauses instead of denying
+
+- GIVEN a declaring client with no token whose context has a pending human-approval request
+- WHEN the gate evaluates it
+- THEN the decision is task state `auth-required` (A2A §7.6), resumable out-of-band via `leasebroker approve`
+
 ## ADRs (HOW — explicitly NOT part of this spec)
 
 Load-bearing design decisions. All 5 accepted 2026-06-07. Full text in `docs/adrs.md`.
