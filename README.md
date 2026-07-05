@@ -174,6 +174,38 @@ if (result.type === 'granted') {
 }
 ```
 
+## A2A lease extension
+
+Leases also travel over [A2A](https://a2a-protocol.org/) v1.0 **agent-to-agent
+delegation** — the same capability attenuation, one protocol layer up. A2A's
+`securitySchemes` carry standing credentials; this extension carries a scoped,
+expiring lease per message instead.
+
+The normative profile is [`docs/a2a-lease-extension-v1.md`](docs/a2a-lease-extension-v1.md)
+(extension URI, `A2A-Extensions` negotiation, token carriage in message
+metadata, per-context binding, the four-stage deny ladder, pinned task
+states). The helpers are deliberately **SDK-free** — plain JSON manipulation;
+the consumer owns the wire:
+
+```typescript
+import {
+  LEASE_EXT_URI,          // the extension URI agents declare + clients echo
+  leaseCardExtension,     // capabilities.extensions[] entry (required: true)
+  attachLeaseToken,       // put the token on an outbound message
+  extractLeaseToken,      // read it on the enforcing side
+  A2aLeaseBinding,        // contextId → token (no mid-context swapping)
+  evaluateA2aLeaseGate,   // extension-support → lease → veto → allow
+} from 'leasebroker';
+```
+
+The gate reuses `LeaseEnforcer.check` unchanged. The reference consumer is
+[gatewarden](https://github.com/TomCruiseTorpedo/gatewarden), which enforces
+this profile at its A2A server face and carries leases on outbound delegations.
+
+> **npm note:** the published `leasebroker` package (0.1.1) predates the A2A
+> lane — `src/a2a/` and the profile doc are on `main` and will ship in the
+> next release.
+
 ## Dashboard (in development)
 
 > **Status: in development — not yet shipped.** A local governance dashboard lives in [`dashboard/`](dashboard/), but it is **not** part of the published `leasebroker` npm package, and its surface may still change.
@@ -215,6 +247,11 @@ npm run demo        # red→green capability-brokering demo
 - Leases are **PASETO v4.public** tokens (Ed25519, via `@noble/ed25519`) — tamper-evident and verifiable offline (ADR-A).
 - Policy is **declarative allow-rules**, with a seam to Cedar later (ADR-C).
 - The lease is immutable; cumulative spend and revocation are tracked as state keyed by lease id (ADR-B/D).
+- A2A delegation carries leases via a **required protocol extension** bound per `contextId` — an awareness gate; the security boundary is always token validation (ADR-F).
+
+`leasebroker` is the **govern** third of a trilogy: [mcp-fit](https://github.com/TomCruiseTorpedo/mcp-fit)
+scores what a server or agent card exposes, and [gatewarden](https://github.com/TomCruiseTorpedo/gatewarden)
+fuses score + govern into one in-path gateway.
 
 ## License
 
