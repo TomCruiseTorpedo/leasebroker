@@ -67,3 +67,8 @@ export type { IssueResult, GrantedResult, PendingResult, DeniedResult } from './
 export { LeaseEnforcer } from './enforce/enforcer.js';
 export { LeasebrokerProxy } from './enforce/proxy.js';
 export type { ToolActionResolver, ProxyServerOptions } from './enforce/proxy.js';
+
+// ---------------------------------------------------------------------------
+// A2A lane (lease extension profile — docs/a2a-lease-extension-v1.md, ADR-F)
+// ---------------------------------------------------------------------------
+export * from './a2a/index.js';
