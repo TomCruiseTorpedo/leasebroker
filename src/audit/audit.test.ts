@@ -62,6 +62,34 @@ describe('InMemoryAuditSink', () => {
     expect(sink.read()).toHaveLength(0);
   });
 
+  it('loadVerbatim preserves stored hashes exactly (no re-chaining)', () => {
+    const source = new InMemoryAuditSink();
+    source.append(makeEvent('request', {}));
+    source.append(makeEvent('decision', {}));
+    const stored = source.read();
+
+    sink.loadVerbatim(stored);
+    expect(sink.read()).toEqual(stored); // intact chain verifies as-is
+  });
+
+  it('loadVerbatim keeps a broken stored chain broken — read() throws', () => {
+    const source = new InMemoryAuditSink();
+    source.append(makeEvent('request', { agentId: 'honest' }));
+    source.append(makeEvent('decision', {}));
+    const stored = source.read();
+    // Tamper with content while keeping the stored hash.
+    stored[0] = { ...stored[0]!, detail: { agentId: 'attacker' } };
+
+    sink.loadVerbatim(stored);
+    expect(() => sink.read()).toThrow(/tampered/);
+    expect(sink.readVerbatim()).toHaveLength(2); // evidence still inspectable
+  });
+
+  it('loadVerbatim throws on a non-empty sink', () => {
+    sink.append(makeEvent('request', {}));
+    expect(() => sink.loadVerbatim([])).toThrow(/empty sink/);
+  });
+
   it('appends a single event and reads it back', () => {
     sink.append(makeEvent('request', { agentId: 'agent-1' }));
     const events = sink.read();
