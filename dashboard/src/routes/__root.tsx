@@ -45,6 +45,7 @@ const CSS = `
   .topbar { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 14px; }
   .title { font-size: 15px; font-weight: 700; letter-spacing: .04em; }
   .title small { color: var(--dim); font-weight: 400; margin-left: 8px; }
+  .statedir { color: var(--dim); font-weight: 400; font-size: 11px; margin-top: 3px; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .counts { display: flex; gap: 14px; align-items: center; }
   .count b { font-size: 16px; }
   .count.active b { color: var(--green); } .count.expired b { color: var(--grey); }
@@ -68,13 +69,13 @@ const CSS = `
   button.revoke:hover { background: var(--red); color: #fff; }
   button.revoke:disabled { opacity: .3; cursor: default; }
   .feed { max-height: 78vh; overflow: auto; }
-  .ev { display: grid; grid-template-columns: 64px 90px 1fr; gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; align-items: baseline; }
-  .ev .t { color: var(--dim); }
+  .ev { display: grid; grid-template-columns: 88px 90px 1fr; gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; align-items: baseline; }
+  .ev .t { color: var(--dim); white-space: nowrap; }
   .ev .ty { text-transform: uppercase; font-size: 10px; letter-spacing: .04em; }
   .ev .ty.denial, .ev .ty.revocation { color: var(--red); }
   .ev .ty.issuance { color: var(--green); }
   .ev .ty.decision, .ev .ty.request, .ev .ty.use { color: var(--dim); }
-  .ev .d { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+  .ev .d { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pending-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .pending-row .who { font-size: 12px; }
   .pending-row .scope { color: var(--dim); font-size: 11px; }

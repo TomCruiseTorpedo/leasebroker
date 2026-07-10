@@ -67,7 +67,10 @@ function Dashboard() {
   });
 
   const pending = meta.data?.pending ?? [];
-  const integrity = meta.data?.integrity ?? 'intact';
+  // No optimistic default: a tamper-evidence badge must never claim "intact"
+  // before the verification result has actually arrived.
+  const integrity = meta.data?.integrity;
+  const stateDir = meta.data?.stateDir;
   const counts = {
     active: leases.filter((l) => l.status === 'active').length,
     expired: leases.filter((l) => l.status === 'expired').length,
@@ -98,6 +101,11 @@ function Dashboard() {
       <div className="topbar">
         <div className="title">
           leasebroker <small>governance console · live</small>
+          {stateDir ? (
+            <div className="statedir" title={stateDir}>
+              state: {stateDir}
+            </div>
+          ) : null}
         </div>
         <div className="counts">
           <span className="count active">
@@ -112,7 +120,7 @@ function Dashboard() {
           <span className="count denials">
             denials <b>{counts.denials}</b>
           </span>
-          <span className={`badge ${integrity}`}>log {integrity}</span>
+          {integrity ? <span className={`badge ${integrity}`}>log {integrity}</span> : null}
         </div>
       </div>
       <div className="grid">

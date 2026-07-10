@@ -150,7 +150,8 @@ export function LeasesTable({
         {leases.length === 0 && (
           <tr>
             <td colSpan={8} className="mono-dim" style={{ padding: '16px' }}>
-              No leases — seed state with <code>npm run seed</code>.
+              No leases in this state dir. Point <code>LEASEBROKER_STATE_DIR</code> at your
+              broker's state directory, or write demo state with <code>npm run seed</code>.
             </td>
           </tr>
         )}

@@ -202,17 +202,13 @@ The gate reuses `LeaseEnforcer.check` unchanged. The reference consumer is
 [gatewarden](https://github.com/TomCruiseTorpedo/gatewarden), which enforces
 this profile at its A2A server face and carries leases on outbound delegations.
 
-> **npm note:** the published `leasebroker` package (0.1.1) predates the A2A
-> lane — `src/a2a/` and the profile doc are on `main` and will ship in the
-> next release.
+> **npm note:** the A2A lane ships in `leasebroker` ≥ 0.2.0 on npm
+> (`src/a2a/` helpers exported from the package barrel; the profile doc lives
+> in this repo).
 
-## Dashboard (in development)
+## Dashboard
 
-> **Status: in development — not yet shipped.** A local governance dashboard lives in [`dashboard/`](dashboard/), but it is **not** part of the published `leasebroker` npm package, and its surface may still change.
-
-A [TanStack Start](https://tanstack.com/start) app for operators: a live leases table, the audit feed, and a pending-approvals panel with revoke / approve / deny actions. It runs entirely against your local state directory and imports the broker's **compiled, verified** read-layer and actions from `dist/` — the same surface a package consumer sees, never the core's TypeScript source.
-
-It builds and runs locally, but treat it as a preview: the core must be built first, and it carries no automated UI tests yet.
+A local-first governance console for operators, in [`dashboard/`](dashboard/): a live, sortable leases table with one-click **revoke**, a pending-approvals panel (**approve** / **deny** veto-required requests), a virtualized live audit feed, and a **tamper-evidence badge** for the audit log. Actions call the broker's **compiled, verified** read-layer and actions from `dist/` — the same surface a package consumer sees, never the core's TypeScript source. It is deliberately **not** part of the published npm package (it would drag React into a security CLI's dependency tree); it ships in-repo.
 
 ```bash
 # 1. Build the core so the dashboard can import dist/
@@ -224,6 +220,16 @@ npm install
 npm run seed   # optional: write demo state to ./.leasebroker
 npm run dev    # http://localhost:3210
 ```
+
+To watch a **real** broker instead of demo state, point it at that broker's state directory — the resolved directory is always shown in the console topbar, so there is never a silent mismatch:
+
+```bash
+LEASEBROKER_STATE_DIR=/path/to/your/.leasebroker npm run dev
+```
+
+The integrity badge verifies the audit log's **stored** hash chain on every poll: any edit, insertion, or deletion in `audit.jsonl` flips it to `tampered`, while the events stay visible so the operator can see what changed. A missing or empty state directory reads as empty-and-intact, not tampered.
+
+The dashboard is a local operator tool with no authentication of its own — keep it bound to localhost.
 
 ## Development
 

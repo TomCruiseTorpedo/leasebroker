@@ -106,3 +106,80 @@ describe('deriveLeases', () => {
     expect(lease?.status).toBe('expired');
   });
 });
+
+/**
+ * Integrity verification against the STORED chain (file-backed).
+ *
+ * Regression guard for the load-rechains-the-log bug: loading a file through
+ * InMemoryAuditSink.append() recomputes hashes, so verification must happen
+ * against the hashes as written on disk, never a re-chain.
+ */
+import { mkdtempSync, rmSync, readFileSync as readF, writeFileSync as writeF } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+import { InMemoryAuditSink } from '../audit/index.js';
+import { saveAuditSink } from '../cli/state.js';
+import { readDashboard } from './read.js';
+
+describe('readDashboard integrity (stored chain)', () => {
+  let dir: string;
+
+  function writeValidLog(): void {
+    const sink = new InMemoryAuditSink();
+    sink.append({ type: 'request', at: '2026-06-07T10:00:00Z', requestId: 'r1', detail: { agentId: 'a' } } as never);
+    sink.append({
+      type: 'issuance',
+      at: '2026-06-07T10:00:01Z',
+      leaseId: 'lease-1',
+      requestId: 'r1',
+      detail: { agentId: 'a', taskId: 't', expiresAt: '2099-01-01T00:00:00Z', capabilities: [], kid: 'k1' },
+    } as never);
+    sink.append({ type: 'use', at: '2026-06-07T10:00:02Z', leaseId: 'lease-1', detail: {} } as never);
+    saveAuditSink(dir, sink);
+  }
+
+  it('intact file reads intact, events and leases present', () => {
+    dir = mkdtempSync(joinPath(tmpdir(), 'lb-read-'));
+    writeValidLog();
+    const snap = readDashboard(dir);
+    expect(snap.integrity).toBe('intact');
+    expect(snap.audit.length).toBe(3);
+    expect(snap.leases.length).toBe(1);
+    expect(snap.stateDir).toBe(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('edited event content is detected as tampered (stored hash mismatch)', () => {
+    dir = mkdtempSync(joinPath(tmpdir(), 'lb-read-'));
+    writeValidLog();
+    const path = joinPath(dir, 'audit.jsonl');
+    const lines = readF(path, 'utf8').trim().split('\n');
+    const ev = JSON.parse(lines[1]!) as { detail: Record<string, unknown> };
+    ev.detail['agentId'] = 'attacker'; // mutate content, keep stored hash
+    lines[1] = JSON.stringify(ev);
+    writeF(path, lines.join('\n') + '\n');
+    const snap = readDashboard(dir);
+    expect(snap.integrity).toBe('tampered');
+    expect(snap.audit.length).toBe(3); // log still visible alongside the flag
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a deleted event is detected as tampered (linkage break)', () => {
+    dir = mkdtempSync(joinPath(tmpdir(), 'lb-read-'));
+    writeValidLog();
+    const path = joinPath(dir, 'audit.jsonl');
+    const lines = readF(path, 'utf8').trim().split('\n');
+    lines.splice(1, 1); // remove the middle event
+    writeF(path, lines.join('\n') + '\n');
+    const snap = readDashboard(dir);
+    expect(snap.integrity).toBe('tampered');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('missing state dir is empty and intact, not tampered', () => {
+    const snap = readDashboard(joinPath(tmpdir(), 'lb-read-definitely-missing'));
+    expect(snap.integrity).toBe('intact');
+    expect(snap.audit).toEqual([]);
+    expect(snap.leases).toEqual([]);
+  });
+});

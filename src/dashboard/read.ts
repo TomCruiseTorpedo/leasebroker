@@ -6,9 +6,15 @@
  * so we fold the append-only audit log (`issuance` − revoked − expired) back into
  * a typed `LeaseView[]`. This is the one piece of glue the core doesn't hand you.
  *
- * Read-only by design: it never generates keys or writes state. It uses
- * `loadAuditSink().read()` (which re-verifies the hash chain — a free integrity
- * check) plus direct JSON reads of `revoked.json` / `spend.json`.
+ * Read-only by design: it never generates keys or writes state. It parses
+ * `audit.jsonl` directly and verifies the STORED hash chain (linkage + content
+ * hash per event) plus direct JSON reads of `revoked.json` / `spend.json`.
+ *
+ * Why not `loadAuditSink().read()`: the sink's `append()` deliberately
+ * recomputes `prevHash`/`hash` on every event, so re-loading a file through it
+ * RE-CHAINS the log — a tampered file verifies clean against its own fresh
+ * chain. Integrity here must be judged against the hashes on disk, which are
+ * the actual tamper evidence.
  *
  * Intended consumer: a TanStack Start dashboard whose server functions import
  * these typed helpers directly for end-to-end type safety.
@@ -16,7 +22,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AuditEvent, Capability, Lease, LeaseRequest } from '../contract/index.js';
-import { loadAuditSink, resolveStateDir } from '../cli/state.js';
+import { computeEventHash } from '../audit/hash.js';
+import { resolveStateDir } from '../cli/state.js';
 
 export type LeaseStatus = 'active' | 'expired' | 'revoked';
 
@@ -94,8 +101,54 @@ export interface DashboardSnapshot {
   audit: AuditEvent[];
   pending: PendingView[];
   counts: { active: number; expired: number; revoked: number; denials: number };
-  /** Hash-chain verification result for the audit log. */
+  /** Hash-chain verification result for the audit log, judged against the STORED hashes. */
   integrity: 'intact' | 'tampered';
+  /** The resolved state directory this snapshot was read from. */
+  stateDir: string;
+}
+
+/**
+ * Parse `audit.jsonl` and verify the stored hash chain.
+ *
+ * Verification is against the hashes AS WRITTEN: each event's `prevHash` must
+ * equal the previous event's stored `hash`, and its stored `hash` must equal
+ * the recomputed content hash. A failure marks the log tampered but parsing
+ * continues — the operator should see the log AND the tamper flag, not a
+ * blank console. A missing file is an empty, intact log.
+ */
+function readAuditVerified(stateDir: string): {
+  audit: AuditEvent[];
+  integrity: 'intact' | 'tampered';
+} {
+  const path = join(stateDir, 'audit.jsonl');
+  if (!existsSync(path)) return { audit: [], integrity: 'intact' };
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return { audit: [], integrity: 'tampered' };
+  }
+
+  const audit: AuditEvent[] = [];
+  let integrity: 'intact' | 'tampered' = 'intact';
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    let ev: AuditEvent;
+    try {
+      ev = JSON.parse(line) as AuditEvent;
+    } catch {
+      // Unparseable line — evidence is damaged; keep what parsed so far.
+      integrity = 'tampered';
+      break;
+    }
+    const expectedPrev = audit.length === 0 ? '' : (audit[audit.length - 1]?.hash ?? '');
+    if (ev.prevHash !== expectedPrev || computeEventHash(ev) !== ev.hash) {
+      integrity = 'tampered';
+    }
+    audit.push(ev);
+  }
+  return { audit, integrity };
 }
 
 function readJsonFile<T>(path: string, fallback: T): T {
@@ -113,15 +166,7 @@ function readJsonFile<T>(path: string, fallback: T): T {
  */
 export function readDashboard(stateDirOverride?: string, now?: Date): DashboardSnapshot {
   const stateDir = resolveStateDir(stateDirOverride);
-
-  let audit: AuditEvent[] = [];
-  let integrity: 'intact' | 'tampered' = 'intact';
-  try {
-    // loadAuditSink().read() re-verifies the hash chain and throws on tamper.
-    audit = loadAuditSink(stateDir).read();
-  } catch {
-    integrity = 'tampered';
-  }
+  const { audit, integrity } = readAuditVerified(stateDir);
 
   const revokedIds = new Set(readJsonFile<string[]>(join(stateDir, 'revoked.json'), []));
   const spendMap = readJsonFile<Record<string, { spent: number; cap: number }>>(
@@ -157,5 +202,6 @@ export function readDashboard(stateDirOverride?: string, now?: Date): DashboardS
       denials: audit.filter((e) => e.type === 'denial').length,
     },
     integrity,
+    stateDir,
   };
 }
