@@ -25,3 +25,7 @@ secrets/
 .env
 .env.*
 !.env.example
+
+# Agent tooling (impeccable design skill), local-only
+.github/skills/impeccable/
+.github/hooks/
