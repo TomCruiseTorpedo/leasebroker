@@ -71,6 +71,17 @@ function defaultToolActionResolver(
 }
 
 export async function cmdServe(state: CliState, opts: ServeOptions): Promise<void> {
+  // A long-running proxy persists its session's audit events at shutdown; on a
+  // tampered log that save is refused, so the session's events would be lost.
+  // Fail closed at startup instead.
+  if (state.auditIntegrity === 'tampered') {
+    process.stderr.write(
+      'refusing to start: audit log fails stored hash-chain verification — possible tampering. ' +
+        'Archive the audit log manually to resume with a fresh chain.\n',
+    );
+    process.exit(1);
+  }
+
   const { enforcer } = wireComponents(state, opts.rulesFile);
 
   const toolActionResolver: ToolActionResolver = defaultToolActionResolver;

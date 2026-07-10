@@ -24,18 +24,28 @@ export interface AuditOptions {
 
 export function cmdAudit(state: CliState, opts: AuditOptions): void {
   if (opts.verify) {
-    // read() verifies the hash chain internally and throws if tampered.
-    try {
-      state.auditSink.read();
+    // Judged against the STORED chain at load time (state.auditIntegrity).
+    // Verifying the in-memory chain instead would be theatre: loading re-chained
+    // events would always pass against their own recomputed hashes.
+    if (state.auditIntegrity === 'intact') {
       console.log(JSON.stringify({ ok: true, message: 'Audit log hash chain is intact' }));
-    } catch (err) {
-      console.error(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    } else {
+      console.error(
+        JSON.stringify({
+          ok: false,
+          error: 'Audit log fails stored hash-chain verification — possible tampering',
+        }),
+      );
       process.exit(1);
     }
     return;
   }
 
-  let events = state.auditSink.read();
+  // A tampered log must still be inspectable — it IS the evidence. Show it
+  // verbatim (loadState already warned on stderr); an intact chain goes
+  // through read()'s verified path.
+  let events =
+    state.auditIntegrity === 'intact' ? state.auditSink.read() : state.auditSink.readVerbatim();
 
   if (opts.type !== undefined) {
     events = events.filter((e) => e.type === opts.type);

@@ -42,6 +42,36 @@ export class InMemoryAuditSink implements AuditSink {
   }
 
   /**
+   * Preload persisted events exactly as stored — no re-hashing, no re-chaining.
+   *
+   * This is the load-from-disk entry point: stored events must keep their
+   * persisted `prevHash` / `hash` values so that `read()` verifies the chain
+   * the file actually carries. Loading through `append()` instead would
+   * recompute the chain and launder tamper evidence.
+   *
+   * Only valid on an empty sink (initial load).
+   */
+  loadVerbatim(events: AuditEvent[]): void {
+    if (this.events.length > 0) {
+      throw new Error('loadVerbatim() is only valid on an empty sink');
+    }
+    for (const event of events) {
+      this.events.push({ ...event });
+    }
+  }
+
+  /**
+   * Read all events in append order WITHOUT verifying the hash chain.
+   *
+   * For evidence display only — an operator inspecting a tampered log still
+   * needs to see its contents. Every trust decision must go through `read()`
+   * or a stored-chain verification, never this.
+   */
+  readVerbatim(): AuditEvent[] {
+    return [...this.events];
+  }
+
+  /**
    * Read all events in append order.
    *
    * Verifies the full hash chain before returning. Throws if any event has

@@ -10,11 +10,10 @@
  * `audit.jsonl` directly and verifies the STORED hash chain (linkage + content
  * hash per event) plus direct JSON reads of `revoked.json` / `spend.json`.
  *
- * Why not `loadAuditSink().read()`: the sink's `append()` deliberately
- * recomputes `prevHash`/`hash` on every event, so re-loading a file through it
- * RE-CHAINS the log — a tampered file verifies clean against its own fresh
- * chain. Integrity here must be judged against the hashes on disk, which are
- * the actual tamper evidence.
+ * Integrity is judged against the hashes on disk (via the shared
+ * `parseStoredAuditJsonl`), which are the actual tamper evidence — never a
+ * re-chain. The CLI's `loadAuditSink()` uses the same stored-chain
+ * verification; this layer stays read-only and file-direct regardless.
  *
  * Intended consumer: a TanStack Start dashboard whose server functions import
  * these typed helpers directly for end-to-end type safety.
@@ -22,7 +21,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AuditEvent, Capability, Lease, LeaseRequest } from '../contract/index.js';
-import { computeEventHash } from '../audit/hash.js';
+import { parseStoredAuditJsonl } from '../audit/index.js';
 import { resolveStateDir } from '../cli/state.js';
 
 export type LeaseStatus = 'active' | 'expired' | 'revoked';
@@ -130,25 +129,8 @@ function readAuditVerified(stateDir: string): {
     return { audit: [], integrity: 'tampered' };
   }
 
-  const audit: AuditEvent[] = [];
-  let integrity: 'intact' | 'tampered' = 'intact';
-  for (const line of raw.split('\n')) {
-    if (line.trim() === '') continue;
-    let ev: AuditEvent;
-    try {
-      ev = JSON.parse(line) as AuditEvent;
-    } catch {
-      // Unparseable line — evidence is damaged; keep what parsed so far.
-      integrity = 'tampered';
-      break;
-    }
-    const expectedPrev = audit.length === 0 ? '' : (audit[audit.length - 1]?.hash ?? '');
-    if (ev.prevHash !== expectedPrev || computeEventHash(ev) !== ev.hash) {
-      integrity = 'tampered';
-    }
-    audit.push(ev);
-  }
-  return { audit, integrity };
+  const { events, integrity } = parseStoredAuditJsonl(raw);
+  return { audit: events, integrity };
 }
 
 function readJsonFile<T>(path: string, fallback: T): T {

@@ -11,8 +11,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AuditEvent, LeaseRequest, PolicyRule } from '../contract/index.js';
-import { InMemoryAuditSink } from '../audit/index.js';
+import type { LeaseRequest, PolicyRule } from '../contract/index.js';
+import { InMemoryAuditSink, parseStoredAuditJsonl } from '../audit/index.js';
+import type { AuditIntegrity } from '../audit/index.js';
 import { InMemoryPendingStore } from '../audit/index.js';
 import { InMemoryRevocationList } from '../audit/index.js';
 import { InMemorySpendLedger } from '../audit/index.js';
@@ -131,22 +132,44 @@ export function savePendingStore(stateDir: string, store: InMemoryPendingStore):
 // Audit sink persistence (JSONL)
 // ---------------------------------------------------------------------------
 
-export function loadAuditSink(stateDir: string): InMemoryAuditSink {
-  const sink = new InMemoryAuditSink();
-  const path = join(stateDir, 'audit.jsonl');
-  if (!existsSync(path)) return sink;
-  try {
-    const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim() !== '');
-    for (const line of lines) {
-      const event = JSON.parse(line) as AuditEvent;
-      sink.append(event);
-    }
-  } catch {
-    // Corrupted log — start fresh
-  }
-  return sink;
+/** Thrown when persisting state would overwrite tamper evidence in audit.jsonl. */
+export class AuditTamperError extends Error {}
+
+export interface AuditSinkLoadResult {
+  sink: InMemoryAuditSink;
+  /** Verdict against the STORED hash chain, judged at load time. */
+  integrity: AuditIntegrity;
 }
 
+/**
+ * Load audit.jsonl verbatim and verify the STORED hash chain.
+ *
+ * Events are loaded exactly as persisted (`loadVerbatim`), never re-appended
+ * through `append()` — appending recomputes `prevHash`/`hash`, which would
+ * re-chain a tampered file into a "valid" log and launder the evidence.
+ * A tampered log is still loaded (the operator must be able to inspect it);
+ * the verdict gates `saveState()` instead.
+ */
+export function loadAuditSink(stateDir: string): AuditSinkLoadResult {
+  const sink = new InMemoryAuditSink();
+  const path = join(stateDir, 'audit.jsonl');
+  if (!existsSync(path)) return { sink, integrity: 'intact' };
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    // Unreadable evidence is indistinguishable from tampering — fail closed.
+    return { sink, integrity: 'tampered' };
+  }
+  const { events, integrity } = parseStoredAuditJsonl(raw);
+  sink.loadVerbatim(events);
+  return { sink, integrity };
+}
+
+/**
+ * Persist the sink to audit.jsonl. Production callers must go through
+ * `saveState()`, which refuses to overwrite a tampered log.
+ */
 export function saveAuditSink(stateDir: string, sink: InMemoryAuditSink): void {
   ensureDir(stateDir);
   const events = sink.read();
@@ -244,6 +267,8 @@ export interface CliState {
   stateDir: string;
   keyPair: KeyPair;
   auditSink: InMemoryAuditSink;
+  /** Stored-chain verdict for audit.jsonl at load time; 'tampered' blocks saveState(). */
+  auditIntegrity: AuditIntegrity;
   pendingStore: InMemoryPendingStore;
   revocationList: InMemoryRevocationList;
   spendLedger: InMemorySpendLedger;
@@ -251,10 +276,19 @@ export interface CliState {
 
 export function loadState(stateDir: string): CliState {
   ensureDir(stateDir);
+  const { sink, integrity } = loadAuditSink(stateDir);
+  if (integrity === 'tampered') {
+    console.error(
+      `WARNING: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification — possible tampering. ` +
+        'Commands that persist state will refuse to run so the evidence is preserved. ' +
+        'Inspect it with `leasebroker audit`, then archive the file manually before resuming.',
+    );
+  }
   return {
     stateDir,
     keyPair: loadOrCreateKeyPair(stateDir),
-    auditSink: loadAuditSink(stateDir),
+    auditSink: sink,
+    auditIntegrity: integrity,
     pendingStore: loadPendingStore(stateDir),
     revocationList: loadRevocationList(stateDir),
     spendLedger: loadSpendLedger(stateDir),
@@ -262,6 +296,13 @@ export function loadState(stateDir: string): CliState {
 }
 
 export function saveState(state: CliState): void {
+  if (state.auditIntegrity === 'tampered') {
+    throw new AuditTamperError(
+      `refusing to save state: audit log at ${join(state.stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
+        'Overwriting it would destroy the tamper evidence. No state files were written. ' +
+        'Archive the audit log manually (e.g. move it aside) to resume with a fresh chain.',
+    );
+  }
   saveAuditSink(state.stateDir, state.auditSink);
   savePendingStore(state.stateDir, state.pendingStore);
   saveRevocationList(state.stateDir, state.revocationList);

@@ -8,6 +8,8 @@
  */
 
 export { InMemoryAuditSink } from './audit-sink.js';
+export { parseStoredAuditJsonl } from './stored-chain.js';
+export type { AuditIntegrity, StoredAuditLog } from './stored-chain.js';
 export { InMemoryPendingStore } from './pending-store.js';
 export { InMemoryRevocationList } from './revocation-list.js';
 export { InMemorySpendLedger } from './spend-ledger.js';
