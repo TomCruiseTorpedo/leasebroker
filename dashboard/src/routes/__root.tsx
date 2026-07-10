@@ -96,6 +96,13 @@ const CSS = `
   button.approve { border-color: var(--green); color: var(--green); }
   button.approve:hover { background: var(--green); color: var(--bg); }
   button.approve:active { transform: translateY(1px); }
+  button.approve:disabled { opacity: .3; cursor: default; }
+  button.approve:disabled:hover { background: transparent; color: var(--green); }
+  .banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; border-radius: 8px; border: 1px solid; margin-bottom: 14px; font-size: 12px; line-height: 1.5; }
+  .banner.warn { color: var(--red); border-color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .banner.error { color: var(--orange); border-color: var(--orange); background: color-mix(in srgb, var(--orange) 8%, transparent); }
+  button.banner-dismiss { flex: none; background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 5px; padding: 2px 9px; cursor: pointer; font: inherit; font-size: 11px; transition: opacity 150ms ease-out; }
+  button.banner-dismiss:hover { opacity: .7; }
   .loading { padding: 40px; color: var(--dim); text-align: center; }
   .empty { padding: 14px; color: var(--dim); font-size: 12px; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }

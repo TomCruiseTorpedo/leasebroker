@@ -27,9 +27,12 @@ const fmtTime = (iso: string) => {
 export function LeasesTable({
   leases,
   onRevoke,
+  disabled = false,
 }: {
   leases: LeaseView[];
   onRevoke: (leaseId: string) => void;
+  /** Lock the revoke control (e.g. audit log failed integrity verification). */
+  disabled?: boolean;
 }) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'status', desc: false },
@@ -73,12 +76,19 @@ export function LeasesTable({
       enableSorting: false,
       cell: (i) => {
         const l = i.row.original;
+        const locked = disabled;
         return (
           <button
             className="revoke"
-            disabled={l.status !== 'active'}
+            disabled={locked || l.status !== 'active'}
             onClick={() => onRevoke(l.id)}
-            title={l.status === 'active' ? 'Revoke this lease' : `Already ${l.status}`}
+            title={
+              locked
+                ? 'Controls locked: audit log failed integrity verification'
+                : l.status === 'active'
+                  ? 'Revoke this lease'
+                  : `Already ${l.status}`
+            }
           >
             revoke
           </button>

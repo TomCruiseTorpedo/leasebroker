@@ -6,12 +6,18 @@ export function PendingPanel({
   pending,
   onApprove,
   onDeny,
+  disabled = false,
 }: {
   pending: PendingView[];
   onApprove: (reqId: string) => void;
   onDeny: (reqId: string) => void;
+  /** Lock approve/deny (e.g. audit log failed integrity verification). */
+  disabled?: boolean;
 }) {
   if (pending.length === 0) return <div className="empty">No pending approvals.</div>;
+  const lockTitle = disabled
+    ? 'Controls locked: audit log failed integrity verification'
+    : undefined;
   return (
     <div>
       {pending.map((p) => (
@@ -23,10 +29,20 @@ export function PendingPanel({
             </span>
           </div>
           <div className="pending-actions">
-            <button className="approve" onClick={() => onApprove(p.reqId)}>
+            <button
+              className="approve"
+              disabled={disabled}
+              onClick={() => onApprove(p.reqId)}
+              title={lockTitle}
+            >
               approve
             </button>
-            <button className="revoke" onClick={() => onDeny(p.reqId)}>
+            <button
+              className="revoke"
+              disabled={disabled}
+              onClick={() => onDeny(p.reqId)}
+              title={lockTitle}
+            >
               deny
             </button>
           </div>
