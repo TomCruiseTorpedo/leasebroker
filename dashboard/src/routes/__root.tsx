@@ -57,31 +57,50 @@ const CSS = `
   .badge.intact { color: var(--green); border-color: var(--green); }
   .badge.tampered { color: var(--red); border-color: var(--red); }
   .grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(360px,1fr); gap: 14px; align-items: start; }
+  @media (max-width: 980px) {
+    .grid { grid-template-columns: 1fr; }
+    .topbar { flex-wrap: wrap; gap: 8px; }
+    .statedir { max-width: 100%; }
+  }
+  .counts { flex-wrap: wrap; }
+  .table-scroll { overflow-x: auto; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  th { color: var(--dim); font-size: 11px; text-transform: uppercase; cursor: pointer; user-select: none; }
-  th:hover { color: var(--text); }
+  th { color: var(--dim); font-size: 11px; text-transform: uppercase; user-select: none; }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--text); }
+  tbody tr { transition: background 120ms ease-out; }
   tbody tr:nth-child(even) { background: var(--panel-2); }
+  tbody tr:hover { background: var(--border); }
   .mono-dim { color: var(--dim); }
-  button.revoke { background: transparent; border: 1px solid var(--red); color: var(--red); border-radius: 5px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11px; }
-  button.revoke:hover { background: var(--red); color: #fff; }
+  button.revoke, button.approve { background: transparent; border: 1px solid; border-radius: 5px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11px; transition: background 150ms ease-out, color 150ms ease-out; }
+  button.revoke { border-color: var(--red); color: var(--red); }
+  button.revoke:hover { background: var(--red); color: var(--bg); }
+  button.revoke:active { transform: translateY(1px); }
   button.revoke:disabled { opacity: .3; cursor: default; }
+  button.revoke:disabled:hover { background: transparent; color: var(--red); }
   .feed { max-height: 78vh; overflow: auto; }
-  .ev { display: grid; grid-template-columns: 88px 90px 1fr; gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; align-items: baseline; }
+  .ev { display: grid; grid-template-columns: 88px 90px minmax(0,1fr); gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; align-items: baseline; }
   .ev .t { color: var(--dim); white-space: nowrap; }
   .ev .ty { text-transform: uppercase; font-size: 10px; letter-spacing: .04em; }
   .ev .ty.denial, .ev .ty.revocation { color: var(--red); }
   .ev .ty.issuance { color: var(--green); }
   .ev .ty.decision, .ev .ty.request, .ev .ty.use { color: var(--dim); }
-  .ev .d { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev .d { color: var(--text); white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
   .pending-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .pending-row .who { font-size: 12px; }
   .pending-row .scope { color: var(--dim); font-size: 11px; }
   .pending-actions { display: flex; gap: 6px; }
-  button.approve { background: transparent; border: 1px solid var(--green); color: var(--green); border-radius: 5px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11px; }
-  button.approve:hover { background: var(--green); color: #fff; }
+  button.approve { border-color: var(--green); color: var(--green); }
+  button.approve:hover { background: var(--green); color: var(--bg); }
+  button.approve:active { transform: translateY(1px); }
   .loading { padding: 40px; color: var(--dim); text-align: center; }
   .empty { padding: 14px; color: var(--dim); font-size: 12px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+    button:active { transform: none; }
+  }
 `;

@@ -8,27 +8,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table';
 import type { LeaseView } from '../../../dist/dashboard/read.js';
-import type { Capability } from '../../../dist/contract/index.js';
-
-function capSummary(caps: Capability[]): string {
-  if (!caps.length) return '—';
-  return caps
-    .map((c) => {
-      switch (c.kind) {
-        case 'fs.read':
-          return `fs.read·${c.paths.length}`;
-        case 'fs.write':
-          return `fs.write·${c.paths.length}`;
-        case 'http.call':
-          return `http·${c.endpoints.length}`;
-        case 'spend':
-          return `spend ${(c.capMinor / 100).toFixed(2)} ${c.currency}`;
-        default:
-          return 'unknown';
-      }
-    })
-    .join(', ');
-}
+import { capSummary } from '../lib/capSummary';
 
 const short = (id: string) => (id.length > 12 ? id.slice(0, 12) + '…' : id);
 const fmtTime = (iso: string) => {
@@ -117,17 +97,35 @@ export function LeasesTable({
   });
 
   return (
+    <div className="table-scroll">
     <table>
       <thead>
         {table.getHeaderGroups().map((hg) => (
           <tr key={hg.id}>
             {hg.headers.map((h) => {
               const sorted = h.column.getIsSorted();
+              const canSort = h.column.getCanSort();
+              const toggle = h.column.getToggleSortingHandler();
               return (
                 <th
                   key={h.id}
-                  onClick={h.column.getToggleSortingHandler()}
-                  style={h.column.getCanSort() ? undefined : { cursor: 'default' }}
+                  className={canSort ? 'sortable' : undefined}
+                  onClick={toggle}
+                  onKeyDown={
+                    canSort
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggle?.(e);
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={canSort ? 0 : undefined}
+                  role={canSort ? 'button' : undefined}
+                  aria-sort={
+                    sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : undefined
+                  }
                 >
                   {flexRender(h.column.columnDef.header, h.getContext())}
                   {sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ''}
@@ -157,5 +155,6 @@ export function LeasesTable({
         )}
       </tbody>
     </table>
+    </div>
   );
 }

@@ -2,7 +2,8 @@ import { useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { AuditEvent } from '../../../dist/contract/index.js';
 
-const ROW = 28;
+/** Estimated single-line row height; real heights are measured per element. */
+const ROW_ESTIMATE = 28;
 const short = (id: string) => (id.length > 14 ? id.slice(0, 14) + '…' : id);
 const timeOnly = (iso: string) => {
   try {
@@ -29,15 +30,22 @@ function detailSummary(ev: AuditEvent): string {
   return parts.join('  ');
 }
 
-/** Virtualized audit event feed. Events are expected already in display order. */
+/**
+ * Virtualized audit event feed. Events are expected already in display order.
+ * Rows auto-size to their content: the virtualizer measures each rendered
+ * element (measureElement + data-index), so multiline detail text expands the
+ * row instead of clipping against a fixed height.
+ */
 export function AuditFeed({ events }: { events: AuditEvent[] }) {
   const rows = events;
   const parent = useRef<HTMLDivElement>(null);
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parent.current,
-    estimateSize: () => ROW,
+    estimateSize: () => ROW_ESTIMATE,
     overscan: 15,
+    // Stable key so measured heights survive list changes (new events prepend).
+    getItemKey: (index) => rows[index]?.hash ?? index,
   });
   const items = v.getVirtualItems();
   const padTop = items.length ? items[0].start : 0;
@@ -50,7 +58,12 @@ export function AuditFeed({ events }: { events: AuditEvent[] }) {
       {items.map((vi) => {
         const ev = rows[vi.index]!;
         return (
-          <div className="ev" key={vi.index} style={{ height: ROW, overflow: 'hidden' }}>
+          <div
+            className="ev"
+            key={vi.key}
+            data-index={vi.index}
+            ref={v.measureElement}
+          >
             <span className="t">{timeOnly(ev.at)}</span>
             <span className={`ty ${ev.type}`}>{ev.type}</span>
             <span className="d" title={ev.leaseId ?? ''}>

@@ -1,25 +1,5 @@
 import type { PendingView } from '../../../dist/dashboard/read.js';
-import type { Capability } from '../../../dist/contract/index.js';
-
-function capSummary(caps: Capability[]): string {
-  if (!caps.length) return '—';
-  return caps
-    .map((c) => {
-      switch (c.kind) {
-        case 'fs.read':
-          return `fs.read·${c.paths.length}`;
-        case 'fs.write':
-          return `fs.write·${c.paths.length}`;
-        case 'http.call':
-          return `http·${c.endpoints.length}`;
-        case 'spend':
-          return `spend ${(c.capMinor / 100).toFixed(2)} ${c.currency}`;
-        default:
-          return 'unknown';
-      }
-    })
-    .join(', ');
-}
+import { capSummary } from '../lib/capSummary';
 
 /** Veto-required requests awaiting an operator decision. */
 export function PendingPanel({
