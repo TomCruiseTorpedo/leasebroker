@@ -1,6 +1,6 @@
 {
   "name": "leasebroker",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local-first broker that issues time-bounded, narrowly-scoped capability leases to AI agents and MCP servers, instead of standing permissions.",
   "repository": {
     "type": "git",
