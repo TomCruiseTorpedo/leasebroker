@@ -48,12 +48,23 @@ export { DeclarativePolicyEngine } from './policy/engine.js';
 export { loadRules } from './policy/loader.js';
 
 // ---------------------------------------------------------------------------
-// Audit lane (in-memory state stores)
+// Audit lane (in-memory state stores + views + exporters)
 // ---------------------------------------------------------------------------
 export { InMemoryAuditSink } from './audit/audit-sink.js';
 export { InMemoryPendingStore } from './audit/pending-store.js';
 export { InMemoryRevocationList } from './audit/revocation-list.js';
 export { InMemorySpendLedger } from './audit/spend-ledger.js';
+export { parseStoredAuditJsonl } from './audit/stored-chain.js';
+export type { AuditIntegrity, StoredAuditLog } from './audit/stored-chain.js';
+export { buildWorkflowReport } from './audit/workflow-report.js';
+export type { WorkflowReport, WorkflowStats } from './audit/workflow-report.js';
+export { OtelExportingAuditSink } from './audit/otel-exporter.js';
+export type { OtelExportOptions } from './audit/otel-exporter.js';
+
+// ---------------------------------------------------------------------------
+// Anchor lane (external anchoring of the audit chain tip — ADR-G)
+// ---------------------------------------------------------------------------
+export * from './anchor/index.js';
 
 // ---------------------------------------------------------------------------
 // Broker lane (issuance orchestration)
