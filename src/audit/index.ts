@@ -9,6 +9,8 @@
 
 export { InMemoryAuditSink } from './audit-sink.js';
 export { buildWorkflowReport } from './workflow-report.js';
+export { OtelExportingAuditSink } from './otel-exporter.js';
+export type { OtelExportOptions } from './otel-exporter.js';
 export type { WorkflowReport, WorkflowStats } from './workflow-report.js';
 export { parseStoredAuditJsonl } from './stored-chain.js';
 export type { AuditIntegrity, StoredAuditLog } from './stored-chain.js';
