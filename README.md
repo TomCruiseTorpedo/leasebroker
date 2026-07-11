@@ -6,6 +6,30 @@ An agent asks for exactly the capability a task needs ("read these paths / call 
 
 > Status: **shipped.** All lanes implemented and green: `tsc --noEmit`, `vitest`, `bun run build`, `node dist/cli/index.js --help`, and the end-to-end demo all pass.
 
+## Why leasebroker
+
+### Not detect-and-flag — enforced
+
+Most agent-governance tools today log a policy violation after the fact and
+leave it to a human to notice. leasebroker enforces in-path: the MCP proxy
+verifies the lease and denies an out-of-scope call before it reaches the
+downstream server — there is no bypass-and-hope-someone-checks-the-trace
+step. If you're evaluating agent governance tools, ask whether a violation
+is *blocked* or only *logged*.
+
+### Tamper-evident by construction
+
+Every lease event — request, decision, issuance, use, denial, revocation —
+appends to a hash-chained log. `leasebroker audit --verify` checks the
+chain against what's actually stored on disk, not a re-derived in-memory
+copy, so the read path can't launder a tampered file.
+
+Beyond local tamper-evidence, the chain tip can be **externally anchored**
+to Bitcoin via OpenTimestamps ([`leasebroker anchor`](#leasebroker-anchor),
+ADR-G): an outside witness that the log existed in its current form at a
+point in time, verifiable by anyone — including against the log's own
+custodian.
+
 ## Install
 
 ```bash
