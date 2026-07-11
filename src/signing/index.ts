@@ -21,4 +21,4 @@ export { generateKeyPair, keyPairFromSeed } from './keygen.js';
 export type { KeyPair } from './keygen.js';
 
 // Low-level PASETO v4.public primitives (useful for testing and interop)
-export { pae, v4PublicSign, v4PublicVerify, toBase64Url, fromBase64Url } from './paseto.js';
+export { pae, v4PublicSign, v4PublicVerify, toBase64Url, fromBase64Url, peekClaimsUnverified } from './paseto.js';

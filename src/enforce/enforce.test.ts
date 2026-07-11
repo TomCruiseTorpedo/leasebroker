@@ -413,9 +413,13 @@ describe('LeasebrokerProxy', () => {
     const content = result?.['content'] as Array<{ text: string }> | undefined;
     expect(content?.[0]?.text).toBe('file contents');
 
-    // Audit: use event emitted
+    // Audit: use event emitted, attributed to the lease and its workflow
+    // (the trust-per-workflow report joins on these fields).
     const events = audit.read();
-    expect(events.some((e) => e.type === 'use')).toBe(true);
+    const useEvent = events.find((e) => e.type === 'use');
+    expect(useEvent).toBeDefined();
+    expect(useEvent?.leaseId).toBe('lease-test-1');
+    expect(useEvent?.detail['taskId']).toBe('task-test');
   });
 
   // ── Out-of-scope deny ──────────────────────────────────────────────────
@@ -439,9 +443,12 @@ describe('LeasebrokerProxy', () => {
     const content = result?.['content'] as Array<{ text: string }> | undefined;
     expect(content?.[0]?.text).toMatch(/denied/i);
 
-    // Audit: denial event emitted
+    // Audit: denial event emitted, attributed to the lease and its workflow.
     const events = audit.read();
-    expect(events.some((e) => e.type === 'denial')).toBe(true);
+    const denialEvent = events.find((e) => e.type === 'denial');
+    expect(denialEvent).toBeDefined();
+    expect(denialEvent?.leaseId).toBe('lease-test-1');
+    expect(denialEvent?.detail['taskId']).toBe('task-test');
   });
 
   // ── Expired deny ───────────────────────────────────────────────────────

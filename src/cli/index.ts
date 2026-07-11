@@ -193,19 +193,22 @@ EXAMPLE
 leasebroker audit — view the audit log
 
 USAGE
-  leasebroker audit [--last <n>] [--type <type>] [--verify] [--verify-anchor]
+  leasebroker audit [--last <n>] [--type <type>] [--verify] [--verify-anchor] [--by-workflow]
 
 OPTIONS
   --last <n>       Show only the last N events
   --type <type>    Filter by event type (request|decision|issuance|use|denial|revocation)
   --verify         Verify hash chain integrity only (no output)
   --verify-anchor  Verify chain integrity AND external anchor proofs (local, no network)
+  --by-workflow    Trust-per-workflow report: per-taskId request/grant/deny/revoke/use
+                   counts with approval and revocation rates (a view over existing data)
 
 EXAMPLE
   leasebroker audit --last 20
   leasebroker audit --type issuance
   leasebroker audit --verify
   leasebroker audit --verify-anchor
+  leasebroker audit --by-workflow
 `.trim(),
 
   anchor: `
@@ -413,6 +416,7 @@ async function main(): Promise<void> {
           type: { type: 'string' as const },
           verify: { type: 'boolean' as const },
           'verify-anchor': { type: 'boolean' as const },
+          'by-workflow': { type: 'boolean' as const },
           'state-dir': { type: 'string' as const },
         },
         strict: false,
@@ -423,6 +427,7 @@ async function main(): Promise<void> {
         type: values['type'] as Parameters<typeof cmdAudit>[1]['type'],
         verify: values['verify'] as boolean | undefined,
         verifyAnchor: values['verify-anchor'] as boolean | undefined,
+        byWorkflow: values['by-workflow'] as boolean | undefined,
       });
       break;
     }

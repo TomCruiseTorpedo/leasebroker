@@ -35,6 +35,7 @@ import {
   SUPPORTED_PROTOCOL_VERSIONS,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Action, AuditEvent, AuditSink, Enforcer } from '../contract/index.js';
+import { peekClaimsUnverified } from '../signing/paseto.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -156,17 +157,33 @@ export class LeasebrokerProxy {
         return this.denyResult('no lease token bound to session');
       }
 
+      // Attribution fields for the audit trail (workflow report joins on
+      // these). Unverified peek — fine for `use` (check() passes right after,
+      // so the claims are signature-backed) and advisory-only for denials
+      // (a forged token mis-attributes its own denial, nothing else).
+      const claims = peekClaimsUnverified(token);
+      const claimLeaseId = typeof claims?.['id'] === 'string' ? claims['id'] : undefined;
+      const claimTaskId = typeof claims?.['taskId'] === 'string' ? claims['taskId'] : undefined;
+
       // Run the enforcer.
       const result = this.opts.enforcer.check(token, action);
 
       if (!result.ok) {
         const reason = result.reason ?? 'enforcement denied';
-        this.appendEvent('denial', { toolName, reason, action });
+        this.appendEvent(
+          'denial',
+          { toolName, reason, action, ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}) },
+          claimLeaseId,
+        );
         return this.denyResult(reason);
       }
 
       // Permitted: emit use event and forward.
-      this.appendEvent('use', { toolName, action });
+      this.appendEvent(
+        'use',
+        { toolName, action, ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}) },
+        claimLeaseId,
+      );
       const downstream = await this.downstreamClient.callTool({
         name: toolName,
         arguments: toolArgs,
@@ -215,10 +232,12 @@ export class LeasebrokerProxy {
   private appendEvent(
     type: AuditEvent['type'],
     detail: Record<string, unknown>,
+    leaseId?: string,
   ): void {
     const event: AuditEvent = {
       type,
       at: new Date().toISOString(),
+      ...(leaseId !== undefined ? { leaseId } : {}),
       detail,
       prevHash: '',
       hash: '',

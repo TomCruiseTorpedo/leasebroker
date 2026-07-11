@@ -210,3 +210,33 @@ export function v4PublicVerify(
 
   return { payload: message, footer };
 }
+
+// ---------------------------------------------------------------------------
+// Unverified claims peek
+// ---------------------------------------------------------------------------
+/**
+ * Decode a v4.public token's claims WITHOUT verifying the signature.
+ *
+ * For attribution/telemetry only (e.g. tagging audit events with the lease's
+ * taskId) — NEVER for enforcement. The same pre-verification decode the
+ * Signer already performs to select a key by `kid`: v4.public payloads are
+ * signed, not encrypted, so the claims are readable by design (ADR-A).
+ *
+ * @returns parsed claims object, or null on any malformation.
+ */
+export function peekClaimsUnverified(token: string): Record<string, unknown> | null {
+  if (!token.startsWith(HEADER)) return null;
+  const parts = token.split('.');
+  const data = parts[2];
+  if (parts.length < 3 || parts.length > 4 || data === undefined) return null;
+  try {
+    const payloadAndSig = fromBase64Url(data);
+    if (payloadAndSig.length <= SIG_BYTES) return null;
+    const message = payloadAndSig.slice(0, -SIG_BYTES);
+    const claims: unknown = JSON.parse(new TextDecoder().decode(message));
+    if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) return null;
+    return claims as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}

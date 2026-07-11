@@ -10,12 +10,14 @@
  *   leasebroker audit --type issuance
  *   leasebroker audit --verify          (verify hash chain integrity)
  *   leasebroker audit --verify-anchor   (chain integrity + external anchors)
+ *   leasebroker audit --by-workflow     (trust-per-workflow report, grouped by taskId)
  *
  * Output: JSON array of AuditEvent objects.
  */
 
 import type { AuditEventType } from '../../contract/index.js';
 import { loadAnchorRecords, readProofFile, verifyAnchors } from '../../anchor/index.js';
+import { buildWorkflowReport } from '../../audit/index.js';
 import type { CliState } from '../state.js';
 
 export interface AuditOptions {
@@ -23,9 +25,26 @@ export interface AuditOptions {
   type?: AuditEventType;
   verify?: boolean;
   verifyAnchor?: boolean;
+  byWorkflow?: boolean;
 }
 
 export function cmdAudit(state: CliState, opts: AuditOptions): void {
+  if (opts.byWorkflow) {
+    // A view over existing data, not new capability. A tampered log is still
+    // viewable evidence (same stance as the event listing below).
+    const events =
+      state.auditIntegrity === 'intact' ? state.auditSink.read() : state.auditSink.readVerbatim();
+    const report = buildWorkflowReport(events);
+    console.log(
+      JSON.stringify(
+        { chain: state.auditIntegrity, totalEvents: events.length, ...report },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   if (opts.verifyAnchor) {
     // Chain integrity AND external anchors, judged locally (no network) —
     // the stored proofs either commit to the stored chain or they don't.
