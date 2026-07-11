@@ -91,6 +91,8 @@ function cmdAnchorStatus(state: CliState): void {
         state: verification.state,
         coveredEvents: verification.coveredEvents,
         totalEvents: events.length,
+        damaged: verification.damaged,
+        recordsMalformed: verification.recordsMalformed,
         anchors: verification.results.map((r) => ({
           anchoredAt: r.record.anchoredAt,
           eventCount: r.record.eventCount,
@@ -104,8 +106,12 @@ function cmdAnchorStatus(state: CliState): void {
       2,
     ),
   );
+  // Same exit ladder as `audit --verify-anchor`: 1 broken, 2 degraded, 0 clean.
   if (!verification.ok) {
     process.exit(1);
+  }
+  if (verification.damaged > 0 || verification.recordsMalformed) {
+    process.exit(2);
   }
 }
 

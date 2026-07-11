@@ -86,11 +86,14 @@ function Dashboard() {
   const anchorTitle =
     anchors === undefined
       ? undefined
-      : anchors.state === 'unanchored'
+      : anchors.state === 'unanchored' && anchors.damaged === 0
         ? 'No external anchors yet — run `leasebroker anchor` to witness the log externally'
         : `External anchors: ${anchors.state} · ${anchors.coveredEvents} event(s) covered by the newest verified anchor` +
           (anchors.latest?.bitcoinHeight !== undefined
             ? ` · Bitcoin block ${anchors.latest.bitcoinHeight}`
+            : '') +
+          (anchors.damaged > 0
+            ? ` · ${anchors.damaged} damaged proof(s) — re-anchor and investigate`
             : '');
   // The core refuses to persist over a tampered log (saveState throws
   // AuditTamperError), so every mutation would fail. Lock the controls to match

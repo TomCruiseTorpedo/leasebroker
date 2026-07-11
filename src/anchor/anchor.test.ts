@@ -378,7 +378,7 @@ describe('anchor verification', () => {
     expect(result.status).toBe('pending');
   });
 
-  it('flags a rewritten chain — anchored tip hash no longer at its index', () => {
+  it('contradicted: rewritten chain — anchored tip hash no longer at its index', () => {
     const events = chainedEvents(4);
     const record = recordFor(events, 3);
     const rewritten = chainedEvents(4).map((e, i) =>
@@ -388,54 +388,88 @@ describe('anchor verification', () => {
     const sink = new InMemoryAuditSink();
     for (const e of rewritten) sink.append({ ...e, prevHash: '', hash: '' });
     const result = verifyAnchorRecord(record, confirmedProofFor(record.tipHash), sink.read());
-    expect(result.status).toBe('invalid');
+    expect(result.status).toBe('contradicted');
     expect(result.detail).toMatch(/does not match anchored tip/);
   });
 
-  it('flags a truncated log — anchored prefix longer than the log', () => {
+  it('contradicted: truncated log — anchored prefix longer than the log', () => {
     const events = chainedEvents(5);
     const record = recordFor(events, 5);
     const proof = confirmedProofFor(record.tipHash);
     const result = verifyAnchorRecord(record, proof, events.slice(0, 3));
-    expect(result.status).toBe('invalid');
+    expect(result.status).toBe('contradicted');
     expect(result.detail).toMatch(/truncated or replaced/);
   });
 
-  it('flags a missing proof file and a digest mismatch', () => {
+  it('contradicted even when the proof file is also gone — chain judgment needs no proof', () => {
+    const events = chainedEvents(5);
+    const record = recordFor(events, 5);
+    const result = verifyAnchorRecord(record, null, events.slice(0, 3));
+    expect(result.status).toBe('contradicted');
+  });
+
+  it('damaged: missing proof file and digest mismatch', () => {
     const events = chainedEvents(3);
     const record = recordFor(events, 3);
-    expect(verifyAnchorRecord(record, null, events).status).toBe('invalid');
+    expect(verifyAnchorRecord(record, null, events).status).toBe('damaged');
     const wrongDigest = confirmedProofFor('cd'.repeat(32));
     const result = verifyAnchorRecord(record, wrongDigest, events);
-    expect(result.status).toBe('invalid');
+    expect(result.status).toBe('damaged');
     expect(result.detail).toMatch(/digest does not match/);
   });
 
-  it('summarize: fail-closed on any invalid; pending-only is healthy; empty is unanchored', () => {
+  it('damaged: unparseable proof bytes', () => {
+    const events = chainedEvents(3);
+    const record = recordFor(events, 3);
+    const result = verifyAnchorRecord(record, new Uint8Array([1, 2, 3]), events);
+    expect(result.status).toBe('damaged');
+    expect(result.detail).toMatch(/unparseable/);
+  });
+
+  it('summarize: broken only on tamper/contradiction; damage degrades; empty is unanchored', () => {
     const events = chainedEvents(3);
     const confirmed = verifyAnchorRecord(recordFor(events, 3), confirmedProofFor(events[2]!.hash), events);
     const pending = verifyAnchorRecord(recordFor(events, 2), pendingProofFor(events[1]!.hash), events);
-    const invalid = verifyAnchorRecord(recordFor(events, 3), null, events);
+    const damaged = verifyAnchorRecord(recordFor(events, 3), null, events);
+    const contradicted = verifyAnchorRecord(recordFor(events, 3), confirmedProofFor(events[2]!.hash), events.slice(0, 2));
 
     expect(summarizeAnchors([confirmed, pending], 'intact', false)).toMatchObject({
       ok: true,
       state: 'anchored',
       coveredEvents: 3,
+      damaged: 0,
     });
     expect(summarizeAnchors([pending], 'intact', false)).toMatchObject({
       ok: true,
       state: 'anchored-pending',
     });
     expect(summarizeAnchors([], 'intact', false)).toMatchObject({ ok: true, state: 'unanchored' });
-    expect(summarizeAnchors([confirmed, invalid], 'intact', false)).toMatchObject({
+
+    // Damage degrades but never breaks: verdict stays ok, coverage comes from
+    // usable proofs only, and the count is surfaced for the exit-2 ladder.
+    expect(summarizeAnchors([confirmed, damaged], 'intact', false)).toMatchObject({
+      ok: true,
+      state: 'anchored',
+      coveredEvents: 3,
+      damaged: 1,
+    });
+    expect(summarizeAnchors([damaged], 'intact', false)).toMatchObject({
+      ok: true,
+      state: 'unanchored',
+      damaged: 1,
+    });
+    expect(summarizeAnchors([confirmed], 'intact', true)).toMatchObject({
+      ok: true,
+      state: 'anchored',
+      recordsMalformed: true,
+    });
+
+    // Contradiction and chain tamper are the alarm — always broken.
+    expect(summarizeAnchors([confirmed, contradicted], 'intact', false)).toMatchObject({
       ok: false,
       state: 'broken',
     });
     expect(summarizeAnchors([confirmed], 'tampered', false)).toMatchObject({
-      ok: false,
-      state: 'broken',
-    });
-    expect(summarizeAnchors([confirmed], 'intact', true)).toMatchObject({
       ok: false,
       state: 'broken',
     });

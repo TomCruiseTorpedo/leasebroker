@@ -139,7 +139,7 @@ leasebroker anchor --upgrade
 leasebroker anchor --status
 ```
 
-Proofs are standard detached `.ots` files under `<state-dir>/anchors/` — independently verifiable with the reference `ots` client — plus an `anchors.jsonl` index. Only the 32-byte tip digest ever leaves the machine; log content stays local. A tampered log refuses to anchor, and `--verify-anchor` fails closed on any proof that stops matching the stored chain. The dashboard surfaces the same verdict as an `anchor` badge (`anchored` / `pending` / `none` / `broken`).
+Proofs are standard detached `.ots` files under `<state-dir>/anchors/` — independently verifiable with the reference `ots` client — plus an `anchors.jsonl` index. Only the 32-byte tip digest ever leaves the machine; log content stays local. A tampered log refuses to anchor. `--verify-anchor` exits 1 when the chain is tampered or a proof **contradicts** it (the history-rewrite alarm), exits 2 when proofs are merely damaged (missing/corrupt — re-anchor and investigate), and 0 when clean. The dashboard surfaces the same verdict as an `anchor` badge (`anchored` / `pending` / `none` / `broken`).
 
 A daily [cron](https://en.wikipedia.org/wiki/Cron) example:
 

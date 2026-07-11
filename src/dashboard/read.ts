@@ -104,6 +104,8 @@ export interface AnchorsView {
   coveredEvents: number;
   /** Total anchor records. */
   count: number;
+  /** Damaged (unusable, non-contradicting) proofs — degraded, not broken. */
+  damaged: number;
   /** Newest anchor record, if any. */
   latest?: {
     anchoredAt: string;
@@ -202,6 +204,7 @@ export function readDashboard(stateDirOverride?: string, now?: Date): DashboardS
     state: anchorVerification.state,
     coveredEvents: anchorVerification.coveredEvents,
     count: anchorLoad.records.length,
+    damaged: anchorVerification.damaged,
     ...(latestRecord !== undefined
       ? {
           latest: {

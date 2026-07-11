@@ -42,6 +42,8 @@ export function cmdAudit(state: CliState, opts: AuditOptions): void {
       anchors: verification.state,
       coveredEvents: verification.coveredEvents,
       totalEvents: events.length,
+      damaged: verification.damaged,
+      recordsMalformed: verification.recordsMalformed,
       detail: verification.results.map((r) => ({
         anchoredAt: r.record.anchoredAt,
         eventCount: r.record.eventCount,
@@ -50,11 +52,15 @@ export function cmdAudit(state: CliState, opts: AuditOptions): void {
         detail: r.detail,
       })),
     };
-    if (verification.ok) {
-      console.log(JSON.stringify(out, null, 2));
-    } else {
+    // Exit ladder: 1 = broken (tamper/contradiction — the alarm), 2 = degraded
+    // (damaged proofs or bad record lines — re-anchor and investigate), 0 = clean.
+    if (!verification.ok) {
       console.error(JSON.stringify(out, null, 2));
       process.exit(1);
+    }
+    console.log(JSON.stringify(out, null, 2));
+    if (verification.damaged > 0 || verification.recordsMalformed) {
+      process.exit(2);
     }
     return;
   }
