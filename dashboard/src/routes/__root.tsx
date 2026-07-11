@@ -56,6 +56,10 @@ const CSS = `
   .badge.revoked { color: var(--red); border-color: var(--red); }
   .badge.intact { color: var(--green); border-color: var(--green); }
   .badge.tampered { color: var(--red); border-color: var(--red); }
+  .badge.anchor-anchored { color: var(--green); border-color: var(--green); }
+  .badge.anchor-anchored-pending { color: var(--orange); border-color: var(--orange); }
+  .badge.anchor-unanchored { color: var(--grey); border-color: var(--grey); }
+  .badge.anchor-broken { color: var(--red); border-color: var(--red); }
   .grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(360px,1fr); gap: 14px; align-items: start; }
   @media (max-width: 980px) {
     .grid { grid-template-columns: 1fr; }

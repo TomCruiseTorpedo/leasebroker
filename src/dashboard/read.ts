@@ -22,6 +22,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AuditEvent, Capability, Lease, LeaseRequest } from '../contract/index.js';
 import { parseStoredAuditJsonl } from '../audit/index.js';
+import { loadAnchorRecords, readProofFile, verifyAnchors } from '../anchor/index.js';
+import type { AnchorState } from '../anchor/index.js';
 import { resolveStateDir } from '../cli/state.js';
 
 export type LeaseStatus = 'active' | 'expired' | 'revoked';
@@ -95,6 +97,22 @@ export interface PendingView {
   requestedDurationMs: number;
 }
 
+/** External-anchoring summary (ADR-G), verified locally from stored proofs. */
+export interface AnchorsView {
+  state: AnchorState;
+  /** Events covered by the newest verified anchor (0 if none). */
+  coveredEvents: number;
+  /** Total anchor records. */
+  count: number;
+  /** Newest anchor record, if any. */
+  latest?: {
+    anchoredAt: string;
+    eventCount: number;
+    status: 'pending' | 'confirmed';
+    bitcoinHeight?: number;
+  };
+}
+
 export interface DashboardSnapshot {
   leases: LeaseView[];
   audit: AuditEvent[];
@@ -102,6 +120,8 @@ export interface DashboardSnapshot {
   counts: { active: number; expired: number; revoked: number; denials: number };
   /** Hash-chain verification result for the audit log, judged against the STORED hashes. */
   integrity: 'intact' | 'tampered';
+  /** External-anchoring verification for the audit log. */
+  anchors: AnchorsView;
   /** The resolved state directory this snapshot was read from. */
   stateDir: string;
 }
@@ -173,6 +193,29 @@ export function readDashboard(stateDirOverride?: string, now?: Date): DashboardS
     now,
   });
 
+  const anchorLoad = loadAnchorRecords(stateDir);
+  const anchorVerification = verifyAnchors(anchorLoad, audit, integrity, (f) =>
+    readProofFile(stateDir, f),
+  );
+  const latestRecord = anchorLoad.records[anchorLoad.records.length - 1];
+  const anchors: AnchorsView = {
+    state: anchorVerification.state,
+    coveredEvents: anchorVerification.coveredEvents,
+    count: anchorLoad.records.length,
+    ...(latestRecord !== undefined
+      ? {
+          latest: {
+            anchoredAt: latestRecord.anchoredAt,
+            eventCount: latestRecord.eventCount,
+            status: latestRecord.status,
+            ...(latestRecord.bitcoinHeight !== undefined
+              ? { bitcoinHeight: latestRecord.bitcoinHeight }
+              : {}),
+          },
+        }
+      : {}),
+  };
+
   return {
     leases,
     audit,
@@ -184,6 +227,7 @@ export function readDashboard(stateDirOverride?: string, now?: Date): DashboardS
       denials: audit.filter((e) => e.type === 'denial').length,
     },
     integrity,
+    anchors,
     stateDir,
   };
 }

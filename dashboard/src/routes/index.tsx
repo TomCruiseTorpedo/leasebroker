@@ -72,7 +72,26 @@ function Dashboard() {
   // No optimistic default: a tamper-evidence badge must never claim "intact"
   // before the verification result has actually arrived.
   const integrity = meta.data?.integrity;
+  const anchors = meta.data?.anchors;
   const stateDir = meta.data?.stateDir;
+  // Same no-optimistic-default rule as the integrity badge: show nothing
+  // until the verification result has arrived. Labels compress AnchorState
+  // for the badge; the title carries the exact coverage numbers.
+  const anchorLabel =
+    anchors === undefined
+      ? undefined
+      : { anchored: 'anchored', 'anchored-pending': 'pending', unanchored: 'none', broken: 'broken' }[
+          anchors.state
+        ];
+  const anchorTitle =
+    anchors === undefined
+      ? undefined
+      : anchors.state === 'unanchored'
+        ? 'No external anchors yet — run `leasebroker anchor` to witness the log externally'
+        : `External anchors: ${anchors.state} · ${anchors.coveredEvents} event(s) covered by the newest verified anchor` +
+          (anchors.latest?.bitcoinHeight !== undefined
+            ? ` · Bitcoin block ${anchors.latest.bitcoinHeight}`
+            : '');
   // The core refuses to persist over a tampered log (saveState throws
   // AuditTamperError), so every mutation would fail. Lock the controls to match
   // that fail-closed stance instead of letting the operator click into an error.
@@ -153,6 +172,11 @@ function Dashboard() {
             denials <b>{counts.denials}</b>
           </span>
           {integrity ? <span className={`badge ${integrity}`}>log {integrity}</span> : null}
+          {anchors && anchorLabel ? (
+            <span className={`badge anchor-${anchors.state}`} title={anchorTitle}>
+              anchor {anchorLabel}
+            </span>
+          ) : null}
         </div>
       </div>
       {mutationsLocked ? (

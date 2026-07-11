@@ -8,21 +8,57 @@
  *   leasebroker audit
  *   leasebroker audit --last 20
  *   leasebroker audit --type issuance
- *   leasebroker audit --verify     (verify hash chain integrity)
+ *   leasebroker audit --verify          (verify hash chain integrity)
+ *   leasebroker audit --verify-anchor   (chain integrity + external anchors)
  *
  * Output: JSON array of AuditEvent objects.
  */
 
 import type { AuditEventType } from '../../contract/index.js';
+import { loadAnchorRecords, readProofFile, verifyAnchors } from '../../anchor/index.js';
 import type { CliState } from '../state.js';
 
 export interface AuditOptions {
   last?: number;
   type?: AuditEventType;
   verify?: boolean;
+  verifyAnchor?: boolean;
 }
 
 export function cmdAudit(state: CliState, opts: AuditOptions): void {
+  if (opts.verifyAnchor) {
+    // Chain integrity AND external anchors, judged locally (no network) —
+    // the stored proofs either commit to the stored chain or they don't.
+    // Verdict composition lives in summarizeAnchors (fail-closed policy).
+    const events =
+      state.auditIntegrity === 'intact' ? state.auditSink.read() : state.auditSink.readVerbatim();
+    const load = loadAnchorRecords(state.stateDir);
+    const verification = verifyAnchors(load, events, state.auditIntegrity, (f) =>
+      readProofFile(state.stateDir, f),
+    );
+    const out = {
+      ok: verification.ok,
+      chain: state.auditIntegrity,
+      anchors: verification.state,
+      coveredEvents: verification.coveredEvents,
+      totalEvents: events.length,
+      detail: verification.results.map((r) => ({
+        anchoredAt: r.record.anchoredAt,
+        eventCount: r.record.eventCount,
+        status: r.status,
+        ...(r.bitcoinHeight !== undefined ? { bitcoinHeight: r.bitcoinHeight } : {}),
+        detail: r.detail,
+      })),
+    };
+    if (verification.ok) {
+      console.log(JSON.stringify(out, null, 2));
+    } else {
+      console.error(JSON.stringify(out, null, 2));
+      process.exit(1);
+    }
+    return;
+  }
+
   if (opts.verify) {
     // Judged against the STORED chain at load time (state.auditIntegrity).
     // Verifying the in-memory chain instead would be theatre: loading re-chained

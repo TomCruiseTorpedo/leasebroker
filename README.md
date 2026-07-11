@@ -119,6 +119,33 @@ leasebroker audit --type issuance
 
 # Verify hash-chain integrity only (exit code, no output)
 leasebroker audit --verify
+
+# Verify chain integrity AND external anchor proofs (local, no network)
+leasebroker audit --verify-anchor
+```
+
+### `leasebroker anchor`
+
+Anchor the audit chain tip to public [OpenTimestamps](https://opentimestamps.org) calendars (ADR-G). The tip hash commits to the entire chain, so one small proof file externally witnesses the whole log up to that point — independent of the machine (and operator) the log lives on. Local tamper-evidence says *this file is internally consistent*; an anchor says *this history existed before that Bitcoin block*, which is what holds up when the log's own custodian is the party in question.
+
+```bash
+# Submit the current tip (idempotent per tip — safe to over-fire from cron)
+leasebroker anchor
+
+# ~1-2 hours later: collect the completed Bitcoin attestations
+leasebroker anchor --upgrade
+
+# Local verification report (no network)
+leasebroker anchor --status
+```
+
+Proofs are standard detached `.ots` files under `<state-dir>/anchors/` — independently verifiable with the reference `ots` client — plus an `anchors.jsonl` index. Only the 32-byte tip digest ever leaves the machine; log content stays local. A tampered log refuses to anchor, and `--verify-anchor` fails closed on any proof that stops matching the stored chain. The dashboard surfaces the same verdict as an `anchor` badge (`anchored` / `pending` / `none` / `broken`).
+
+A daily [cron](https://en.wikipedia.org/wiki/Cron) example:
+
+```cron
+# Collect yesterday's attestations, then anchor today's tip
+0 6 * * * cd /path/to/project && leasebroker anchor --upgrade && leasebroker anchor
 ```
 
 ## Running the Demo
@@ -254,6 +281,7 @@ npm run demo        # red→green capability-brokering demo
 - Policy is **declarative allow-rules**, with a seam to Cedar later (ADR-C).
 - The lease is immutable; cumulative spend and revocation are tracked as state keyed by lease id (ADR-B/D).
 - A2A delegation carries leases via a **required protocol extension** bound per `contextId` — an awareness gate; the security boundary is always token validation (ADR-F).
+- The audit chain tip is **externally anchored** via OpenTimestamps — proofs a third party can verify even against the log's own custodian (ADR-G).
 
 `leasebroker` is the **govern** third of a trilogy: [mcp-fit](https://github.com/TomCruiseTorpedo/mcp-fit)
 scores what a server or agent card exposes, and [gatewarden](https://github.com/TomCruiseTorpedo/gatewarden)

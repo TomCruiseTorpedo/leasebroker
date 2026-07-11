@@ -29,6 +29,7 @@ import { cmdRevoke } from './commands/revoke.js';
 import { cmdServe } from './commands/serve.js';
 import { cmdPolicy } from './commands/policy.js';
 import { cmdAudit } from './commands/audit.js';
+import { cmdAnchor } from './commands/anchor.js';
 
 // ---------------------------------------------------------------------------
 // Version
@@ -63,6 +64,7 @@ COMMANDS
   serve       Start the enforce proxy fronting a downstream MCP server
   policy      View or load policy rules
   audit       View the audit log
+  anchor      Anchor the audit chain tip to public OpenTimestamps calendars
 
 GLOBAL OPTIONS
   --state-dir <path>   State directory (default: .leasebroker/ in cwd)
@@ -91,6 +93,9 @@ EXAMPLES
 
   # View audit log
   leasebroker audit --last 20
+
+  # Anchor the audit chain tip externally (e.g. from a daily cron job)
+  leasebroker anchor
 `.trim();
 
 const COMMAND_HELP: Record<string, string> = {
@@ -188,17 +193,47 @@ EXAMPLE
 leasebroker audit — view the audit log
 
 USAGE
-  leasebroker audit [--last <n>] [--type <type>] [--verify]
+  leasebroker audit [--last <n>] [--type <type>] [--verify] [--verify-anchor]
 
 OPTIONS
-  --last <n>      Show only the last N events
-  --type <type>   Filter by event type (request|decision|issuance|use|denial|revocation)
-  --verify        Verify hash chain integrity only (no output)
+  --last <n>       Show only the last N events
+  --type <type>    Filter by event type (request|decision|issuance|use|denial|revocation)
+  --verify         Verify hash chain integrity only (no output)
+  --verify-anchor  Verify chain integrity AND external anchor proofs (local, no network)
 
 EXAMPLE
   leasebroker audit --last 20
   leasebroker audit --type issuance
   leasebroker audit --verify
+  leasebroker audit --verify-anchor
+`.trim(),
+
+  anchor: `
+leasebroker anchor — anchor the audit chain tip to public OpenTimestamps calendars
+
+The tip hash already commits to the entire chain, so one small proof file
+witnesses the whole log up to that point — externally, independent of this
+machine. Meant to run on a schedule (cron/launchd); idempotent per tip.
+
+USAGE
+  leasebroker anchor [--calendar <url> ...]
+  leasebroker anchor --upgrade
+  leasebroker anchor --status
+
+OPTIONS
+  --calendar <url>  Calendar server to submit to (repeatable; default: the
+                    public alice/bob/finney calendars)
+  --upgrade         Collect completed Bitcoin attestations for pending anchors
+                    (calendars need ~1-2 hours after submission)
+  --status          Report local anchor verification as JSON (no network)
+
+STATE
+  Proofs live in <state-dir>/anchors/*.ots (standard OpenTimestamps format,
+  verifiable with the reference ots client) with an anchors.jsonl index.
+
+EXAMPLE
+  # Daily cron: anchor, and collect yesterday's attestations
+  leasebroker anchor --upgrade && leasebroker anchor
 `.trim(),
 };
 
@@ -377,6 +412,7 @@ async function main(): Promise<void> {
           last: { type: 'string' as const },
           type: { type: 'string' as const },
           verify: { type: 'boolean' as const },
+          'verify-anchor': { type: 'boolean' as const },
           'state-dir': { type: 'string' as const },
         },
         strict: false,
@@ -386,6 +422,27 @@ async function main(): Promise<void> {
         last: values['last'] !== undefined ? parseInt(values['last'] as string, 10) : undefined,
         type: values['type'] as Parameters<typeof cmdAudit>[1]['type'],
         verify: values['verify'] as boolean | undefined,
+        verifyAnchor: values['verify-anchor'] as boolean | undefined,
+      });
+      break;
+    }
+
+    case 'anchor': {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          upgrade: { type: 'boolean' as const },
+          status: { type: 'boolean' as const },
+          calendar: { type: 'string' as const, multiple: true },
+          'state-dir': { type: 'string' as const },
+        },
+        strict: false,
+      }) as { values: Record<string, string | boolean | string[] | undefined> };
+      const state = loadState(resolvedStateDir);
+      await cmdAnchor(state, {
+        upgrade: values['upgrade'] as boolean | undefined,
+        status: values['status'] as boolean | undefined,
+        calendars: values['calendar'] as string[] | undefined,
       });
       break;
     }
