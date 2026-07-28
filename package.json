@@ -44,6 +44,8 @@
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:govern-sync": "bash scripts/check-sync-govern.sh",
+    "check:govern-cross": "bash scripts/check-sync-govern.sh --cross",
     "test:watch": "vitest",
     "demo": "bun ./scripts/demo.mjs"
   },

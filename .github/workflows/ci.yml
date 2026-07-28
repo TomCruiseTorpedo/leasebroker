@@ -16,6 +16,14 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run test
+      - name: Govern-engine drift guard
+        run: bun run check:govern-sync
+      # Asserts this repo's manifest is byte-identical to gatewarden's. The
+      # step above only proves this repo is internally consistent — both repos
+      # can pass it while the vendored engines diverge. Expect a transient red
+      # between the two halves of a two-repo change; land them back-to-back.
+      - name: Govern-engine cross-repo assertion
+        run: bun run check:govern-cross
 
   dashboard:
     runs-on: ubuntu-latest
