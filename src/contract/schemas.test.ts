@@ -425,3 +425,73 @@ describe('PolicyRuleSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Path canonicalization at the trust boundary
+// ---------------------------------------------------------------------------
+
+describe('path canonicalization', () => {
+  const parsePaths = (paths: string[]): string[] | null => {
+    const result = CapabilitySchema.safeParse({ kind: 'fs.read', paths });
+    return result.success && result.data.kind === 'fs.read' ? result.data.paths : null;
+  };
+
+  it('resolves .. segments so a traversal cannot masquerade as an in-scope path', () => {
+    // The whole point: the policy engine's prefix matcher saw './data/…' and
+    // said covered, while the enforcer's minimatch resolved the segments and
+    // said no. Normalizing here means both see '../.ssh/id_rsa'.
+    expect(parsePaths(['./data/../../.ssh/id_rsa'])).toEqual(['../.ssh/id_rsa']);
+  });
+
+  it('resolves . segments', () => {
+    expect(parsePaths(['data/./file.txt'])).toEqual(['data/file.txt']);
+  });
+
+  it('strips a leading ./ so the two matchers compare like with like', () => {
+    expect(parsePaths(['./data/**'])).toEqual(['data/**']);
+  });
+
+  it('leaves glob syntax intact', () => {
+    expect(parsePaths(['data/**', 'logs/*.txt', 'a/**/b'])).toEqual([
+      'data/**',
+      'logs/*.txt',
+      'a/**/b',
+    ]);
+  });
+
+  it('leaves an absolute path absolute', () => {
+    expect(parsePaths(['/etc/passwd'])).toEqual(['/etc/passwd']);
+  });
+
+  it('REJECTS an empty path rather than widening it to the cwd', () => {
+    // normalize('') is '.', which would silently turn an empty entry into
+    // "everything under the current directory".
+    expect(parsePaths([''])).toBeNull();
+    expect(parsePaths(['   '])).toBeNull();
+  });
+
+  it('canonicalizes policy rule paths on the same terms as request paths', () => {
+    // Both sides of every comparison must be normalized, or the matchers can
+    // disagree again.
+    const result = PolicyRuleSchema.safeParse({
+      ruleId: 'r1',
+      effect: 'allow',
+      paths: ['./data/**', 'logs/./'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.paths).toEqual(['data/**', 'logs/']);
+  });
+
+  it('does NOT canonicalize http.call endpoints — they are URLs, not paths', () => {
+    // Running a filesystem normalizer over a URL would collapse '//' in the
+    // authority. Endpoints keep their exact spelling.
+    const result = CapabilitySchema.safeParse({
+      kind: 'http.call',
+      endpoints: ['https://api.example.com/v1/**'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.kind === 'http.call') {
+      expect(result.data.endpoints).toEqual(['https://api.example.com/v1/**']);
+    }
+  });
+});

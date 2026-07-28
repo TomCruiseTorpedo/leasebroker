@@ -22,6 +22,7 @@ import type {
   Signer,
   VerifyResult,
 } from '../contract/index.js';
+import { canonicalizePath } from '../contract/index.js';
 import type { InMemorySpendLedger } from '../audit/index.js';
 
 // ---------------------------------------------------------------------------
@@ -112,10 +113,20 @@ function checkScope(lease: Lease, action: Action): VerifyResult {
     if (cap.kind !== action.kind) continue;
 
     if (action.kind === 'fs.read' && cap.kind === 'fs.read') {
-      if (cap.paths.some((p) => minimatch(action.path, p))) return { ok: true };
+      // An Action arrives at RUNTIME and never passes through a Zod schema, so
+      // it is canonicalized here with the same normalizer the request schema
+      // and the policy engine use. BOTH sides of the comparison must be
+      // canonical: normalizing only one turns an agreement into a mismatch (a
+      // lease scoped to 'data/**' would stop matching './data/file.txt').
+      // canonicalizePath is idempotent, so re-normalizing costs nothing.
+      const requested = canonicalizePath(action.path);
+      if (cap.paths.some((p) => minimatch(requested, canonicalizePath(p)))) return { ok: true };
     } else if (action.kind === 'fs.write' && cap.kind === 'fs.write') {
-      if (cap.paths.some((p) => minimatch(action.path, p))) return { ok: true };
+      const requested = canonicalizePath(action.path);
+      if (cap.paths.some((p) => minimatch(requested, canonicalizePath(p)))) return { ok: true };
     } else if (action.kind === 'http.call' && cap.kind === 'http.call') {
+      // Endpoints are URLs and are deliberately NOT run through a filesystem
+      // path normalizer — see the note in contract/schemas.ts.
       if (cap.endpoints.some((e) => minimatch(action.endpoint, e))) return { ok: true };
     } else if (action.kind === 'spend' && cap.kind === 'spend') {
       if (cap.currency === action.currency) return { ok: true };

@@ -43,6 +43,8 @@ export {
   LeaseRequestSchema,
   LeaseSchema,
   PolicyRuleSchema,
+  // Path canonicalization — the single normalizer both matchers must use.
+  canonicalizePath,
 } from './schemas.js';
 
 export type {

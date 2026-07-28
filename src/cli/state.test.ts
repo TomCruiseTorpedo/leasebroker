@@ -17,7 +17,15 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryAuditSink } from '../audit/index.js';
-import { AuditTamperError, loadAuditSink, loadState, saveAuditSink, saveState } from './state.js';
+import {
+  AuditTamperError,
+  PolicyFileError,
+  loadAuditSink,
+  loadPolicyRules,
+  loadState,
+  saveAuditSink,
+  saveState,
+} from './state.js';
 import { cmdAudit } from './commands/audit.js';
 import { cmdRevoke } from './commands/revoke.js';
 
@@ -219,5 +227,38 @@ describe('cmdAudit on a tampered log', () => {
       cmdAudit(loadState(tmpDir), { verify: true });
     });
     expect((JSON.parse(stdout[0]!) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadPolicyRules — corrupt is not the same as absent
+// ---------------------------------------------------------------------------
+
+describe('loadPolicyRules', () => {
+  it('returns [] when there is genuinely no policy file', () => {
+    expect(loadPolicyRules(tmpDir)).toEqual([]);
+  });
+
+  it('THROWS a named error when the policy file exists but cannot be parsed', () => {
+    // Both outcomes end in deny-by-default, so both are safe — but they need
+    // opposite responses from the operator. Returning [] for a corrupt file
+    // left someone staring at a deny-all system with a policy file sitting
+    // right there, apparently ignored for no reason.
+    writeFileSync(join(tmpDir, 'policy.json'), '{ not valid json');
+    expect(() => loadPolicyRules(tmpDir)).toThrow(PolicyFileError);
+    try {
+      loadPolicyRules(tmpDir);
+    } catch (err) {
+      expect(err).toBeInstanceOf(PolicyFileError);
+      // The message must name the file, or it is not actionable.
+      expect((err as PolicyFileError).message).toContain('policy.json');
+      expect((err as PolicyFileError).path).toContain('policy.json');
+    }
+  });
+
+  it('throws for an explicitly-passed corrupt rules file too', () => {
+    const custom = join(tmpDir, 'custom-rules.json');
+    writeFileSync(custom, 'nope');
+    expect(() => loadPolicyRules(tmpDir, custom)).toThrow(PolicyFileError);
   });
 });

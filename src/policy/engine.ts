@@ -37,6 +37,7 @@ import type {
   PolicyEngine,
   PolicyRule,
 } from '../contract/index.js';
+import { canonicalizePath } from '../contract/index.js';
 
 /** Implements the `PolicyEngine` interface over declarative allow-rules. */
 export class DeclarativePolicyEngine implements PolicyEngine {
@@ -154,7 +155,7 @@ export class DeclarativePolicyEngine implements PolicyEngine {
       case 'http.call': {
         if (rule.endpoints === undefined || rule.endpoints.length === 0) return true;
         return cap.endpoints.every(reqEndpoint =>
-          rule.endpoints!.some(ruleEndpoint => pathIsCovered(reqEndpoint, ruleEndpoint))
+          rule.endpoints!.some(ruleEndpoint => endpointIsCovered(reqEndpoint, ruleEndpoint))
         );
       }
 
@@ -186,29 +187,64 @@ export class DeclarativePolicyEngine implements PolicyEngine {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if `requested` is covered by `rulePattern`.
+ * Glob coverage test, on strings taken exactly as given.
  *
  * Matching rules:
- * - Exact: `requested === rulePattern`
+ * - Exact: `requested === pattern`
  * - `/**` suffix: covers the base dir and all descendants
- *   e.g. `./data/**` covers `./data/file.txt` and `./data/sub/file.txt`
+ *   e.g. `data/**` covers `data/file.txt` and `data/sub/file.txt`
  * - `/*` suffix: covers immediate children only (no further nesting)
- *   e.g. `./data/*` covers `./data/file.txt` but NOT `./data/sub/file.txt`
+ *   e.g. `data/*` covers `data/file.txt` but NOT `data/sub/file.txt`
+ *
+ * This is a string-PREFIX test and performs no normalization, which is why it
+ * is private: callers must pick `pathIsCovered` or `endpointIsCovered` so the
+ * canonicalization decision is made explicitly rather than by default.
  */
-function pathIsCovered(requested: string, rulePattern: string): boolean {
-  if (rulePattern === requested) return true;
+function globIsCovered(requested: string, pattern: string): boolean {
+  if (pattern === requested) return true;
 
-  if (rulePattern.endsWith('/**')) {
-    const base = rulePattern.slice(0, -3); // strip `/**`
+  if (pattern.endsWith('/**')) {
+    const base = pattern.slice(0, -3); // strip `/**`
     return requested === base || requested.startsWith(base + '/');
   }
 
-  if (rulePattern.endsWith('/*')) {
-    const base = rulePattern.slice(0, -2); // strip `/*`
+  if (pattern.endsWith('/*')) {
+    const base = pattern.slice(0, -2); // strip `/*`
     if (!requested.startsWith(base + '/')) return false;
     const rest = requested.slice(base.length + 1);
     return rest.length > 0 && !rest.includes('/');
   }
 
   return false;
+}
+
+/**
+ * Returns true if the filesystem path `requested` is covered by `rulePattern`.
+ *
+ * Canonicalizes BOTH sides first. Without that, the prefix test above reports
+ * `./data/../../.ssh/id_rsa` as covered by `./data/**` — it carries the prefix
+ * while actually climbing out of the directory. The enforcer's minimatch
+ * resolves the segments and disagrees, so the broker would MINT and audit-log
+ * a lease it believed was scoped to `./data` while it actually named `~/.ssh`,
+ * with the denial arriving only later at use time.
+ *
+ * Schema validation already canonicalizes requests and stored policy rules;
+ * repeating it here covers a library caller who constructs capabilities
+ * directly and never passes a schema. `canonicalizePath` is idempotent.
+ */
+function pathIsCovered(requested: string, rulePattern: string): boolean {
+  return globIsCovered(canonicalizePath(requested), canonicalizePath(rulePattern));
+}
+
+/**
+ * Returns true if the HTTP endpoint `requested` is covered by `rulePattern`.
+ *
+ * Same glob grammar, deliberately WITHOUT path canonicalization: these are
+ * URLs, and a filesystem normalizer would rewrite them wrongly (`https://a//b`
+ * would collapse to `https:/a/b`). Endpoint matching has its own, separate
+ * weakness — it compares a DECLARED endpoint string and nothing intercepts
+ * sockets — which is the egress question, not this one.
+ */
+function endpointIsCovered(requested: string, rulePattern: string): boolean {
+  return globIsCovered(requested, rulePattern);
 }

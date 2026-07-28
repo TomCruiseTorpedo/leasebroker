@@ -26,7 +26,8 @@ It is least-privilege made operational for agentic systems: OAuth-scopes-meets-t
 - **Grant / Deny / Veto-required** — the three policy decisions.
 - **Veto (approval gate)** — explicit human approval required before a high-risk lease is issued.
 - **Revocation** — invalidating an active lease before its expiry.
-- **Audit event** — an append-only record of any request, decision, issuance, use, denial, or revocation.
+- **Audit event** — an append-only record of any request, decision, issuance, use, denial, revocation, or passthrough.
+- **Passthrough** — a call the proxy forwarded with NO lease check, because no capability was mapped to that tool name. Recorded as its own event type, never as a `use`: a `use` asserts that a lease was verified and the call fell within its scope, and a passthrough asserts neither.
 
 ## Requirements
 
@@ -150,6 +151,8 @@ A request whose decision is veto-required SHALL NOT yield a usable lease until a
 
 ### Requirement: Audit Log
 The broker SHALL record every request, decision, issuance, use, denial, and revocation as an append-only audit event sufficient to reconstruct who-asked-for-what, what-was-decided, and what-was-done.
+
+The proxy SHALL additionally record a `passthrough` event for every call it forwards WITHOUT a lease check because no capability is mapped to the tool name. Such a call is ungoverned by design; it must not also be invisible, or the log presents a complete record of governed traffic while giving no indication that ungoverned traffic exists beside it. A passthrough SHALL NOT be recorded as a `use`.
 
 #### Scenario: Full lifecycle is reconstructable
 - GIVEN a lease that is requested, granted, used twice, and revoked

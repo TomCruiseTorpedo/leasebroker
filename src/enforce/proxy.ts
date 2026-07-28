@@ -139,7 +139,23 @@ export class LeasebrokerProxy {
       const action = this.opts.toolActionResolver?.(toolName, toolArgs);
 
       // Unknown tool → forward transparently (no enforcement).
+      //
+      // This path is UNGOVERNED by design today: no capability is mapped to
+      // the tool name, so there is nothing to check the call against. What it
+      // must not also be is INVISIBLE. Until now the call left no trace at
+      // all, so an operator reading the audit log saw a complete record of
+      // governed traffic with no indication that ungoverned traffic existed
+      // alongside it. Recording the call does not govern it — it makes the gap
+      // countable, which is what any decision about the gap has to rest on.
+      //
+      // LOGGING ONLY. Whether an unmapped tool should instead be DENIED is an
+      // open product decision (the README says deny-by-default, the code
+      // allows). Do not change the default here until that is settled.
       if (action === undefined) {
+        this.appendEvent('passthrough', {
+          toolName,
+          reason: 'no capability mapped to this tool name — forwarded without a lease check',
+        });
         const result = await this.downstreamClient.callTool({
           name: toolName,
           arguments: toolArgs,

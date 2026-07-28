@@ -128,7 +128,17 @@ export type AuditEventType =
   | 'issuance'
   | 'use'
   | 'denial'
-  | 'revocation';
+  | 'revocation'
+  /**
+   * A call the proxy forwarded WITHOUT any lease check, because no capability
+   * was mapped to that tool name.
+   *
+   * Deliberately not folded into 'use'. A 'use' event asserts that a lease was
+   * verified and the call fell within its scope; a passthrough means neither
+   * happened. Conflating them would make the log claim governance it did not
+   * perform, which is the most expensive kind of lie an audit trail can tell.
+   */
+  | 'passthrough';
 
 /** Shared fields for all audit events (hash-chained append-only log). */
 type AuditEventBase = {
@@ -156,7 +166,8 @@ export type AuditEvent =
   | (AuditEventBase & { type: 'issuance' })
   | (AuditEventBase & { type: 'use' })
   | (AuditEventBase & { type: 'denial' })
-  | (AuditEventBase & { type: 'revocation' });
+  | (AuditEventBase & { type: 'revocation' })
+  | (AuditEventBase & { type: 'passthrough' });
 
 // ---------------------------------------------------------------------------
 // VerifyResult

@@ -197,7 +197,9 @@ USAGE
 
 OPTIONS
   --last <n>       Show only the last N events
-  --type <type>    Filter by event type (request|decision|issuance|use|denial|revocation)
+  --type <type>    Filter by event type
+                   (request|decision|issuance|use|denial|revocation|passthrough)
+                   passthrough = forwarded with NO lease check (unmapped tool)
   --verify         Verify hash chain integrity only (no output)
   --verify-anchor  Verify chain integrity AND external anchor proofs (local, no network)
   --by-workflow    Trust-per-workflow report: per-taskId request/grant/deny/revoke/use

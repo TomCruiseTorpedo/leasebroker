@@ -422,6 +422,45 @@ describe('LeasebrokerProxy', () => {
     expect(useEvent?.detail['taskId']).toBe('task-test');
   });
 
+  // ── Unmapped tool: ungoverned, but no longer invisible ─────────────────
+
+  it('emits exactly one passthrough event for an unmapped tool, and still forwards', async () => {
+    // The proxy has no capability mapped to 'list_files', so there is nothing
+    // to check the call against and it is forwarded as before. What changed is
+    // that it now leaves a trace: an operator reading the audit log can see
+    // that ungoverned traffic exists instead of seeing only governed traffic
+    // and inferring there was no other kind.
+    const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+    const token = sign(signer, lease);
+    downstreamResponses.set('list_files', {
+      content: [{ type: 'text', text: 'a.txt b.txt' }],
+    });
+
+    await initSession(clientTransport, token);
+
+    const response = await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'list_files', arguments: {} },
+    });
+
+    // Still forwards — this is logging only, not a policy change.
+    const result = response['result'] as Record<string, unknown> | undefined;
+    expect(result?.['isError']).toBeFalsy();
+    const content = result?.['content'] as Array<{ text: string }> | undefined;
+    expect(content?.[0]?.text).toBe('a.txt b.txt');
+
+    const events = audit.read();
+    const passthroughs = events.filter((e) => e.type === 'passthrough');
+    expect(passthroughs).toHaveLength(1);
+    expect(passthroughs[0]?.detail['toolName']).toBe('list_files');
+
+    // NOT recorded as a 'use'. A 'use' event asserts a lease was verified and
+    // the call was in scope; neither happened here, and an audit trail that
+    // claims governance it did not perform is worse than one with a gap.
+    expect(events.some((e) => e.type === 'use')).toBe(false);
+  });
+
   // ── Out-of-scope deny ──────────────────────────────────────────────────
 
   it('denies an out-of-scope fs.read tool call', async () => {

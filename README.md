@@ -20,7 +20,10 @@ is *blocked* or only *logged*.
 ### Tamper-evident by construction
 
 Every lease event — request, decision, issuance, use, denial, revocation —
-appends to a hash-chained log. `leasebroker audit --verify` checks the
+appends to a hash-chained log, alongside `passthrough` for any call the proxy
+forwarded with no lease check because no capability was mapped to that tool.
+Ungoverned traffic is ungoverned by design; recording it separately means the
+log never presents governed traffic as if it were the whole picture. `leasebroker audit --verify` checks the
 chain against what's actually stored on disk, not a re-derived in-memory
 copy, so the read path can't launder a tampered file.
 

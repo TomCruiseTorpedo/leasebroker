@@ -81,13 +81,41 @@ export function loadOrCreateKeyPair(stateDir: string): KeyPair {
 // Policy rules persistence
 // ---------------------------------------------------------------------------
 
+/**
+ * Thrown when a policy file exists but cannot be read or parsed.
+ *
+ * Distinct from "no policy file", which is a legitimate configuration meaning
+ * zero rules. Both end in deny-by-default, so both are SAFE — but they call
+ * for opposite responses from the operator, and the previous `catch { return
+ * [] }` made them indistinguishable. A corrupt policy.json presented as an
+ * absent one leaves someone staring at a deny-all system with a policy file
+ * sitting right there, apparently being ignored for no reason.
+ */
+export class PolicyFileError extends Error {
+  readonly path: string;
+
+  constructor(path: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`policy file at ${path} could not be read: ${detail}`);
+    this.name = 'PolicyFileError';
+    this.path = path;
+  }
+}
+
+/**
+ * Load policy rules from `rulesFilePath`, or `policy.json` in the state dir.
+ *
+ * Returns `[]` only when the file genuinely does not exist. An existing file
+ * that cannot be read or parsed throws {@link PolicyFileError} — it is a
+ * misconfiguration to be fixed, not an empty ruleset to be silently adopted.
+ */
 export function loadPolicyRules(stateDir: string, rulesFilePath?: string): PolicyRule[] {
   const path = rulesFilePath ?? join(stateDir, 'policy.json');
   if (!existsSync(path)) return [];
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as PolicyRule[];
-  } catch {
-    return [];
+  } catch (err) {
+    throw new PolicyFileError(path, err);
   }
 }
 

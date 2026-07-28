@@ -492,3 +492,63 @@ describe('loadRules — malformed rule rejected', () => {
     expect(caught?.message).toMatch(/ruleId/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Path traversal — denied at ISSUANCE, not silently minted then denied at use
+// ---------------------------------------------------------------------------
+
+describe('DeclarativePolicyEngine — path canonicalization', () => {
+  const scopedToData: PolicyRule[] = [
+    { ruleId: 'allow-data', effect: 'allow', capabilityKind: 'fs.read', paths: ['./data/**'] },
+  ];
+
+  it('DENIES a traversal that escapes the granted scope', () => {
+    // Before canonicalization this was granted: the rule matcher is a string-
+    // prefix test, and './data/../../.ssh/id_rsa' carries the './data/' prefix
+    // while actually naming ~/.ssh. The broker would mint and audit-log a
+    // lease it believed was scoped to ./data, and only the enforcer would
+    // refuse it later. The refusal now happens at issuance.
+    const engine = new DeclarativePolicyEngine(scopedToData);
+    const decision = engine.evaluate({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      capabilities: [{ kind: 'fs.read', paths: ['./data/../../.ssh/id_rsa'] }],
+      requestedDurationMs: 60_000,
+    });
+    expect(decision.effect).toBe('deny');
+  });
+
+  it('still grants a legitimate path inside the scope, however it is spelled', () => {
+    // The other direction of the same bug: over-normalizing one side alone
+    // would start REFUSING paths that should pass.
+    const engine = new DeclarativePolicyEngine(scopedToData);
+    for (const path of ['./data/file.txt', 'data/file.txt', 'data/./file.txt', './data/sub/f']) {
+      const decision = engine.evaluate({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        capabilities: [{ kind: 'fs.read', paths: [path] }],
+        requestedDurationMs: 60_000,
+      });
+      expect(decision.effect, `path ${path}`).toBe('grant');
+    }
+  });
+
+  it('does not filesystem-normalize http.call endpoints', () => {
+    // A URL is not a path: collapsing '//' would rewrite the authority.
+    const engine = new DeclarativePolicyEngine([
+      {
+        ruleId: 'allow-api',
+        effect: 'allow',
+        capabilityKind: 'http.call',
+        endpoints: ['https://api.example.com/**'],
+      },
+    ]);
+    const decision = engine.evaluate({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      capabilities: [{ kind: 'http.call', endpoints: ['https://api.example.com/v1/x'] }],
+      requestedDurationMs: 60_000,
+    });
+    expect(decision.effect).toBe('grant');
+  });
+});
