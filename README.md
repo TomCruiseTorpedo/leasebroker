@@ -70,6 +70,14 @@ leasebroker request --request '{
 
 Prints a JSON outcome — `{ type: 'granted', token, leaseId }`, `{ type: 'pending', reqId }` (veto-required), or `{ type: 'denied', reason }` (exits 2).
 
+> **`agentId` is not authenticated, by design.** leasebroker is not an identity
+> provider: it governs *capabilities* — what may be done — and assumes agent
+> identity is established upstream. Nothing here verifies the string, so a rule
+> scoped with `agentId` is exactly as strong as whatever establishes identity
+> in front of it. What *is* authenticated is the lease itself: every issued
+> token is PASETO v4.public and its signature is verified on every call. Rules
+> that omit `agentId` do not depend on this at all.
+
 ### `leasebroker pending`
 
 List all pending (veto-required) requests awaiting approval.

@@ -117,7 +117,27 @@ export class DeclarativePolicyEngine implements PolicyEngine {
 
   /** Returns true if `rule` applies to this `cap` within this `request`. */
   #ruleMatches(rule: PolicyRule, request: LeaseRequest, cap: Capability): boolean {
-    // Filter by agent
+    // Filter by agent.
+    //
+    // `request.agentId` IS NOT AUTHENTICATED. It is a self-declared string on
+    // the incoming request: `Broker.request` takes no credential, and there is
+    // no inbound token, mTLS or signature at request time. So an agent selects
+    // which rules apply to it by choosing what to call itself.
+    //
+    // That is a DELIBERATE scope boundary, not a bug — see
+    // specs/lease-broker/spec.md: "NOT an identity provider / not user
+    // authentication … assuming agent identity is established upstream." The
+    // system authenticates LEASES (PASETO v4.public, verified on every call),
+    // not REQUESTERS.
+    //
+    // What it means in practice: an agent-scoped rule is exactly as strong as
+    // whatever establishes identity upstream, and this repo neither provides
+    // nor checks that. A rule with no `agentId` does not depend on it at all.
+    // Anything keyed on the matched rule inherits the same dependency —
+    // notably the per-rule duration budget, whose whole purpose is to bound
+    // total granted authority. Do not add a security control that keys on
+    // `agentId` (or on `taskId`, which is self-declared in the same way)
+    // without first closing this, or the control can be reset by renaming.
     if (rule.agentId !== undefined && rule.agentId !== request.agentId) {
       return false;
     }
