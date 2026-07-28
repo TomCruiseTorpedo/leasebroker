@@ -17,3 +17,5 @@ export type { AuditIntegrity, StoredAuditLog } from './stored-chain.js';
 export { InMemoryPendingStore } from './pending-store.js';
 export { InMemoryRevocationList } from './revocation-list.js';
 export { InMemorySpendLedger } from './spend-ledger.js';
+export { InMemoryDurationLedger } from './duration-ledger.js';
+export type { DurationLedgerEntry, StoredDurationLedger } from './duration-ledger.js';

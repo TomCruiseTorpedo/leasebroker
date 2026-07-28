@@ -11,6 +11,23 @@ import { readDashboard } from './read.js';
 
 /** Seed a pending.json with one veto-required request. */
 function seedPending(dir: string, reqId: string) {
+  // A pending request only exists because a veto-required rule matched it, so
+  // seed that rule too. Approval re-evaluates policy: it supplies the human
+  // consent the veto gate was waiting for, it does not grant authority that no
+  // rule allows — and re-evaluation is also what lets the duration budget bind
+  // on the approval path. A pending entry with no policy behind it is not a
+  // state the product can reach.
+  writeFileSync(
+    join(dir, 'policy.json'),
+    JSON.stringify([
+      {
+        ruleId: 'veto-tmp-read',
+        effect: 'veto-required',
+        capabilityKind: 'fs.read',
+        paths: ['/tmp/**'],
+      },
+    ]),
+  );
   writeFileSync(
     join(dir, 'pending.json'),
     JSON.stringify({

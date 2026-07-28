@@ -153,6 +153,34 @@ export interface SpendLedger {
 }
 
 // ---------------------------------------------------------------------------
+// DurationLedger
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks total GRANTED lease duration per policy rule, with exponential decay.
+ *
+ * Where the SpendLedger bounds what a single lease may spend, this bounds how
+ * much lease time a rule may hand out in total — the control that stops an
+ * agent assembling standing permission out of unlimited short renewals.
+ *
+ * Keyed on the matched `ruleId`, never on anything the agent reports. See
+ * `audit/duration-ledger.ts` for why that key and not the granted scope.
+ *
+ * `now` is a parameter rather than read internally so decay is testable
+ * without waiting for wall-clock time to pass.
+ */
+export interface DurationLedger {
+  /** Decayed spend for `key` as of `now`, in milliseconds. */
+  spentMs(key: string, halfLifeMs: number, now: number): number;
+
+  /** Remaining grantable milliseconds under `capMs`. Never negative. */
+  headroomMs(key: string, capMs: number, halfLifeMs: number, now: number): number;
+
+  /** Record `grantedMs` of issued lease time against `key`. */
+  accrue(key: string, grantedMs: number, halfLifeMs: number, now: number): void;
+}
+
+// ---------------------------------------------------------------------------
 // Enforcer (ADR-B)
 // ---------------------------------------------------------------------------
 

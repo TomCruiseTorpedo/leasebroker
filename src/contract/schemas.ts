@@ -178,8 +178,16 @@ export const PolicyRuleSchema = z.object({
     .optional(),
   /** The policy effect when this rule matches. */
   effect: z.enum(['allow', 'veto-required']),
-  /** Optional upper bound on lease duration. */
+  /** Optional upper bound on the duration of a SINGLE lease (clamped, not denied). */
   maxDurationMs: z.number().int().positive().optional(),
+  /**
+   * Optional cap on TOTAL granted lease time attributable to this rule,
+   * decayed with `durationHalfLifeMs`. Read as a duty cycle: how much of
+   * wall-clock time this authority may be live.
+   */
+  maxTotalDurationMs: z.number().int().positive().optional(),
+  /** Half-life for the total-duration budget. Required when the budget is set. */
+  durationHalfLifeMs: z.number().int().positive().optional(),
   /**
    * For fs.read / fs.write: allowed path glob patterns.
    *
@@ -209,7 +217,16 @@ export const PolicyRuleSchema = z.object({
     .optional(),
   /** For spend: required currency code. */
   currency: z.string().optional(),
-});
+}).refine(
+  (rule) => rule.maxTotalDurationMs === undefined || rule.durationHalfLifeMs !== undefined,
+  {
+    message:
+      'durationHalfLifeMs is required when maxTotalDurationMs is set — a duration budget ' +
+      'with no decay is a LIFETIME budget, and because the broker clamps rather than denies, ' +
+      'exhausting it produces zero-length leases: a permanent lockout wearing a clamp\'s clothing',
+    path: ['durationHalfLifeMs'],
+  },
+);
 
 /** Inferred TypeScript type from the PolicyRule schema. */
 export type PolicyRuleInput = z.infer<typeof PolicyRuleSchema>;

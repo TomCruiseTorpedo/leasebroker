@@ -19,6 +19,7 @@ export type {
   LeaseRequest,
   Lease,
   Decision,
+  MatchedRule,
   AuditEventType,
   AuditEvent,
   VerifyResult,
@@ -34,6 +35,7 @@ export type {
   PendingStore,
   RevocationList,
   SpendLedger,
+  DurationLedger,
   Enforcer,
 } from './interfaces.js';
 

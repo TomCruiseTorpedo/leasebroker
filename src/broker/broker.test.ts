@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { AuditEvent, LeaseRequest, PolicyRule } from '../contract/index.js';
 import { InMemoryAuditSink } from '../audit/audit-sink.js';
 import { InMemoryPendingStore } from '../audit/pending-store.js';
+import { InMemoryDurationLedger } from '../audit/duration-ledger.js';
 import { generateKeyPair } from '../signing/keygen.js';
 import { PasetoV4PublicSigner } from '../signing/signer.js';
 import { DeclarativePolicyEngine } from '../policy/engine.js';
@@ -352,5 +353,217 @@ describe('Broker — veto path (pending → deny)', () => {
     broker.deny(pendingResult.reqId);
 
     expect(() => audit.read()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duration budget — the renewal-accretion fix
+// ---------------------------------------------------------------------------
+
+describe('Broker — duration budget', () => {
+  const HOUR = 3_600_000;
+
+  /** Build a broker whose fs.read rule carries a duration budget. */
+  function makeBudgetedBroker(
+    maxTotalDurationMs: number,
+    durationHalfLifeMs: number,
+    extra?: Partial<PolicyRule>,
+  ) {
+    const kp = generateKeyPair(KID);
+    const signer = new PasetoV4PublicSigner(kp);
+    const rule: PolicyRule = {
+      ruleId: 'budgeted-read',
+      capabilityKind: 'fs.read',
+      effect: 'allow',
+      paths: ['/data/**'],
+      maxTotalDurationMs,
+      durationHalfLifeMs,
+      ...extra,
+    };
+    const policy = new DeclarativePolicyEngine([rule]);
+    const audit = new InMemoryAuditSink();
+    const pending = new InMemoryPendingStore();
+    const ledger = new InMemoryDurationLedger();
+    const broker = new Broker(policy, signer, audit, pending, KID, ledger);
+    return { broker, audit, ledger, pending };
+  }
+
+  it('a thousand short renewals consume the SAME budget as one long lease', () => {
+    // This is the hole. Broker.request used to be stateless across requests,
+    // so 1000 sequential 60s leases cost exactly what one 60s lease cost and
+    // an agent could assemble standing permission a minute at a time. The
+    // package description — capability leases INSTEAD OF standing permissions
+    // — was untrue while that held.
+    const budget = 2 * HOUR;
+    const { broker } = makeBudgetedBroker(budget, 6 * HOUR);
+
+    let totalGrantedMs = 0;
+    let denials = 0;
+
+    for (let i = 0; i < 1000; i += 1) {
+      const res = broker.request(makeFsReadRequest({ taskId: `task-${i}` }));
+      if (res.type === 'granted') {
+        const lease = (res as GrantedResult).lease;
+        totalGrantedMs +=
+          new Date(lease.expiresAt).getTime() - new Date(lease.issuedAt).getTime();
+      } else {
+        denials += 1;
+      }
+    }
+
+    // Decay makes a little headroom regenerate during the loop, so the total
+    // is bounded by the budget rather than exactly equal to it. The point is
+    // that it is BOUNDED at all — it used to be 1000 * 60s = ~16.7 hours.
+    expect(totalGrantedMs).toBeLessThanOrEqual(budget * 1.05);
+    expect(totalGrantedMs).toBeGreaterThan(0);
+    expect(denials).toBeGreaterThan(0); // the budget actually bit
+  });
+
+  it('rotating taskId does not buy a fresh budget', () => {
+    // taskId is agent-declared. A budget keyed on it would reset every time
+    // the agent invented a new one — which is why the key is the matched rule.
+    const { broker, ledger } = makeBudgetedBroker(HOUR, 6 * HOUR);
+    broker.request(makeFsReadRequest({ taskId: 'first', requestedDurationMs: 30 * 60_000 }));
+    broker.request(makeFsReadRequest({ taskId: 'second', requestedDurationMs: 30 * 60_000 }));
+
+    // Both charged the same key, so the budget is spent.
+    expect(ledger.headroomMs('budgeted-read', HOUR, 6 * HOUR, Date.now())).toBeLessThan(60_000);
+  });
+
+  it('rotating agentId does not buy a fresh budget either', () => {
+    const { broker, ledger } = makeBudgetedBroker(HOUR, 6 * HOUR);
+    broker.request(makeFsReadRequest({ agentId: 'a', requestedDurationMs: 30 * 60_000 }));
+    broker.request(makeFsReadRequest({ agentId: 'b', requestedDurationMs: 30 * 60_000 }));
+    expect(ledger.headroomMs('budgeted-read', HOUR, 6 * HOUR, Date.now())).toBeLessThan(60_000);
+  });
+
+  it('CLAMPS a legitimate long task rather than denying it', () => {
+    // Clamping is the point. Denying an over-long request is what taught
+    // agents to max out and renew.
+    const { broker } = makeBudgetedBroker(HOUR, 6 * HOUR);
+    const res = broker.request(makeFsReadRequest({ requestedDurationMs: 4 * HOUR }));
+
+    expect(res.type).toBe('granted');
+    const lease = (res as GrantedResult).lease;
+    const grantedMs =
+      new Date(lease.expiresAt).getTime() - new Date(lease.issuedAt).getTime();
+    expect(grantedMs).toBeLessThanOrEqual(HOUR);
+    expect(grantedMs).toBeGreaterThan(0);
+  });
+
+  it('denies with a named, non-permanent reason once headroom is gone', () => {
+    // A zero-length lease would be a denial dressed as a grant, so exhaustion
+    // is reported as what it is — and says the budget regenerates, so a caller
+    // knows to wait rather than hammer.
+    const { broker } = makeBudgetedBroker(60_000, 6 * HOUR);
+    broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+    const res = broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+
+    expect(res.type).toBe('denied');
+    if (res.type === 'denied') {
+      expect(res.reason).toMatch(/budget exhausted/i);
+      expect(res.reason).toContain('budgeted-read');
+      expect(res.reason).toMatch(/not a permanent denial/i);
+    }
+  });
+
+  it('never issues a sub-second lease from a nearly-exhausted budget', () => {
+    // Headroom decays continuously, so it approaches zero asymptotically and
+    // is almost never exactly zero. Without a minimum grantable duration the
+    // broker would keep issuing sub-millisecond leases that expire before they
+    // can be used — a denial dressed as a grant, and worse than a denial
+    // because the caller is told it succeeded. This assertion was FLAKY before
+    // the floor existed: whether it passed depended on how many milliseconds
+    // elapsed between the two calls.
+    const { broker } = makeBudgetedBroker(60_000, 6 * HOUR);
+    const first = broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+    expect(first.type).toBe('granted');
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+      expect(res.type).toBe('denied');
+    }
+  });
+
+  it('issues whole milliseconds only', () => {
+    const { broker } = makeBudgetedBroker(90_000, 6 * HOUR);
+    broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+    const res = broker.request(makeFsReadRequest({ requestedDurationMs: 60_000 }));
+    if (res.type === 'granted') {
+      const lease = (res as GrantedResult).lease;
+      const ms = new Date(lease.expiresAt).getTime() - new Date(lease.issuedAt).getTime();
+      expect(Number.isInteger(ms)).toBe(true);
+    }
+  });
+
+  it('leaves an unbudgeted rule completely unbounded (opt-in control)', () => {
+    const { broker } = makeBroker([allowFsReadRule]);
+    for (let i = 0; i < 50; i += 1) {
+      expect(broker.request(makeFsReadRequest()).type).toBe('granted');
+    }
+  });
+
+  it('FAILS CLOSED when a rule declares a budget but no ledger is wired', () => {
+    // A declared budget silently going unenforced is exactly the silent
+    // non-enforcement this control exists to remove.
+    const kp = generateKeyPair(KID);
+    const signer = new PasetoV4PublicSigner(kp);
+    const policy = new DeclarativePolicyEngine([
+      {
+        ruleId: 'budgeted-read',
+        capabilityKind: 'fs.read',
+        effect: 'allow',
+        paths: ['/data/**'],
+        maxTotalDurationMs: HOUR,
+        durationHalfLifeMs: 6 * HOUR,
+      },
+    ]);
+    // No ledger passed.
+    const broker = new Broker(policy, signer, new InMemoryAuditSink(), new InMemoryPendingStore(), KID);
+
+    const res = broker.request(makeFsReadRequest());
+    expect(res.type).toBe('denied');
+    if (res.type === 'denied') {
+      expect(res.reason).toMatch(/no DurationLedger is wired/i);
+    }
+  });
+
+  it('charges the budget on the APPROVE path too', () => {
+    // Otherwise an agent whose requests are veto-required routes around the
+    // budget entirely, as long as a human keeps clicking approve.
+    const kp = generateKeyPair(KID);
+    const signer = new PasetoV4PublicSigner(kp);
+    const policy = new DeclarativePolicyEngine([
+      {
+        ruleId: 'veto-budgeted',
+        capabilityKind: 'fs.read',
+        effect: 'veto-required',
+        maxTotalDurationMs: HOUR,
+        durationHalfLifeMs: 6 * HOUR,
+      },
+    ]);
+    const ledger = new InMemoryDurationLedger();
+    const broker = new Broker(policy, signer, new InMemoryAuditSink(), new InMemoryPendingStore(), KID, ledger);
+
+    const pendingRes = broker.request(makeFsReadRequest({ requestedDurationMs: 30 * 60_000 }));
+    expect(pendingRes.type).toBe('pending');
+    if (pendingRes.type !== 'pending') return;
+
+    expect(ledger.spentMs('veto-budgeted', 6 * HOUR, Date.now())).toBe(0); // nothing yet
+    const approved = broker.approve(pendingRes.reqId);
+    expect(approved.type).toBe('granted');
+    expect(ledger.spentMs('veto-budgeted', 6 * HOUR, Date.now())).toBeGreaterThan(0);
+  });
+
+  it('records granted-vs-requested duration in the issuance audit event', () => {
+    const { broker, audit } = makeBudgetedBroker(HOUR, 6 * HOUR);
+    broker.request(makeFsReadRequest({ requestedDurationMs: 4 * HOUR }));
+
+    const issuance = eventsOfType(audit, 'issuance')[0];
+    expect(issuance?.detail['requestedDurationMs']).toBe(4 * HOUR);
+    expect(issuance?.detail['grantedDurationMs']).toBeLessThanOrEqual(HOUR);
+    // A lease silently shorter than requested is something an operator needs
+    // to see in the log rather than infer.
+    expect(issuance?.detail['clampedBy']).toBeDefined();
   });
 });

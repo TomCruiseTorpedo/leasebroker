@@ -80,9 +80,11 @@ FILES=(
   src/broker/broker.ts src/broker/index.ts
   # enforce — per-call verification, the in-path enforcement point
   src/enforce/enforcer.ts src/enforce/index.ts src/enforce/proxy.ts
-  # audit — hash chain, state stores, and stored-chain tamper verification
+  # audit — hash chain, state stores, stored-chain tamper verification, and the
+  # duration budget that bounds renewal accretion
   src/audit/audit-sink.ts src/audit/hash.ts src/audit/pending-store.ts
   src/audit/revocation-list.ts src/audit/spend-ledger.ts src/audit/stored-chain.ts
+  src/audit/duration-ledger.ts
   # a2a — protocol binding and gating
   src/a2a/binding.ts src/a2a/extension.ts src/a2a/gate.ts src/a2a/index.ts
   # cli — shared state handling and the commands that carry no divergent options

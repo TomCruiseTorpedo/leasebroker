@@ -115,6 +115,35 @@ export type Decision = {
   reason: string;
   /** Optional: the policy rule that produced this decision. */
   ruleId?: string;
+  /**
+   * Duration the policy is willing to grant, already clamped to the matched
+   * rule's `maxDurationMs`. Present whenever a rule matched.
+   *
+   * The broker may clamp this FURTHER against the rule's duration budget; this
+   * is the policy ceiling, not the final issued duration.
+   */
+  grantedDurationMs?: number;
+  /**
+   * EVERY rule the request matched, with its duration budget if it has one —
+   * passed through so the broker can consult the ledger without holding the
+   * rule set.
+   *
+   * All of them, not just `ruleId`. A request carrying several capabilities
+   * matches several rules and the issued lease grants authority under all of
+   * them, so all of them must be charged. Charging only one would let an agent
+   * dilute its budget by bundling an expensive capability with a cheap one
+   * whose rule has a larger allowance.
+   */
+  matchedRules?: MatchedRule[];
+};
+
+/** A rule that matched, with the duration-budget parameters it carries. */
+export type MatchedRule = {
+  ruleId: string;
+  /** Absent when the rule sets no duration budget. */
+  maxTotalDurationMs?: number;
+  /** Present whenever `maxTotalDurationMs` is (the schema requires the pair). */
+  durationHalfLifeMs?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -212,8 +241,38 @@ export type PolicyRule = {
   capabilityKind?: CapabilityKind;
   /** The policy effect when this rule matches. */
   effect: 'allow' | 'veto-required';
-  /** Optional cap on lease duration. */
+  /**
+   * Optional cap on the duration of a SINGLE lease.
+   *
+   * An over-long request is CLAMPED to this, not denied. Denying is what
+   * trains an agent to ask for exactly the maximum and renew forever.
+   */
   maxDurationMs?: number;
+  /**
+   * Optional cap on TOTAL granted lease time attributable to this rule,
+   * measured in milliseconds and decayed with `durationHalfLifeMs`.
+   *
+   * This is what stops renewal accretion: without it, a thousand sequential
+   * short leases cost exactly what one short lease costs, and standing
+   * permission can be assembled one minute at a time.
+   *
+   * Read it as a DUTY CYCLE rather than a raw number — how much of wall-clock
+   * time this authority may be live. 24h per 24h is 100%, i.e. the standing
+   * permission leases are meant to replace.
+   *
+   * Omit to leave the rule unbudgeted (the pre-existing behaviour).
+   */
+  maxTotalDurationMs?: number;
+  /**
+   * Half-life for `maxTotalDurationMs`, in milliseconds. Required whenever
+   * `maxTotalDurationMs` is set.
+   *
+   * Spend decays continuously, so headroom regenerates instead of resetting on
+   * a boundary an agent can wait for. After one half-life, half of what was
+   * spent has been forgiven. Short approximates a rate limit; long
+   * approximates a hard budget with slow forgiveness.
+   */
+  durationHalfLifeMs?: number;
   /** For fs.read/fs.write: allowed path patterns. */
   paths?: string[];
   /** For http.call: allowed endpoint patterns. */

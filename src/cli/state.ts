@@ -16,7 +16,7 @@ import { InMemoryAuditSink, parseStoredAuditJsonl } from '../audit/index.js';
 import type { AuditIntegrity } from '../audit/index.js';
 import { InMemoryPendingStore } from '../audit/index.js';
 import { InMemoryRevocationList } from '../audit/index.js';
-import { InMemorySpendLedger } from '../audit/index.js';
+import { InMemorySpendLedger, InMemoryDurationLedger } from '../audit/index.js';
 import { generateKeyPair, keyPairFromSeed } from '../signing/index.js';
 import type { KeyPair } from '../signing/index.js';
 
@@ -277,6 +277,37 @@ export function loadSpendLedger(stateDir: string): InMemorySpendLedger {
   return ledger;
 }
 
+// ---------------------------------------------------------------------------
+// Duration ledger persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the duration ledger from `duration.json`.
+ *
+ * Sits beside `spend.json` but is deliberately NOT modelled on it: the spend
+ * loader reaches through a cast into the ledger's private Map, which this one
+ * avoids by going through the ledger's own serialise/hydrate.
+ *
+ * A corrupt file starts fresh rather than throwing — unlike `policy.json`,
+ * where corruption is a misconfiguration that must be surfaced, this is an
+ * accounting record and losing it forgives spend rather than granting
+ * authority nobody wrote down.
+ */
+export function loadDurationLedger(stateDir: string): InMemoryDurationLedger {
+  const path = join(stateDir, 'duration.json');
+  if (!existsSync(path)) return new InMemoryDurationLedger();
+  try {
+    return InMemoryDurationLedger.fromJSON(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return new InMemoryDurationLedger();
+  }
+}
+
+export function saveDurationLedger(stateDir: string, ledger: InMemoryDurationLedger): void {
+  ensureDir(stateDir);
+  writeFileSync(join(stateDir, 'duration.json'), JSON.stringify(ledger.toJSON(), null, 2));
+}
+
 export function saveSpendLedger(stateDir: string, ledger: InMemorySpendLedger): void {
   ensureDir(stateDir);
   const internal = ledger as unknown as { ledger: Map<string, { spent: number; cap: number }> };
@@ -300,6 +331,8 @@ export interface CliState {
   pendingStore: InMemoryPendingStore;
   revocationList: InMemoryRevocationList;
   spendLedger: InMemorySpendLedger;
+  /** Bounds total granted lease time per policy rule (renewal accretion). */
+  durationLedger: InMemoryDurationLedger;
 }
 
 export function loadState(stateDir: string): CliState {
@@ -320,6 +353,7 @@ export function loadState(stateDir: string): CliState {
     pendingStore: loadPendingStore(stateDir),
     revocationList: loadRevocationList(stateDir),
     spendLedger: loadSpendLedger(stateDir),
+    durationLedger: loadDurationLedger(stateDir),
   };
 }
 
@@ -335,4 +369,5 @@ export function saveState(state: CliState): void {
   savePendingStore(state.stateDir, state.pendingStore);
   saveRevocationList(state.stateDir, state.revocationList);
   saveSpendLedger(state.stateDir, state.spendLedger);
+  saveDurationLedger(state.stateDir, state.durationLedger);
 }

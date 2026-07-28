@@ -74,14 +74,55 @@ On a grant, the broker SHALL issue a lease that is (a) scoped to no more than th
 #### Scenario: Granted lease is scoped, expiring, and tamper-evident
 - GIVEN a granted request for duration N
 - WHEN the lease is issued
-- THEN the lease carries the granted scope (no broader than requested), an expiry at issue-time + N, and an integrity guarantee
+- THEN the lease carries the granted scope (no broader than requested), an expiry at issue-time + G where G is the GRANTED duration, and an integrity guarantee
+- AND G is never greater than N, but may be less — the broker clamps against the matching rule's `maxDurationMs` and against remaining duration budget
+- AND the issuance audit event records both N and G, so a lease shorter than asked for is visible rather than inferred
 - AND a tampered copy of the lease fails verification
+
+#### Scenario: An over-long request is shortened, not refused
+- GIVEN a rule whose `maxDurationMs` is less than the requested duration
+- WHEN the request is evaluated
+- THEN the rule still matches and the lease is issued at the rule's maximum
+- AND the request is NOT denied — denying it would make "ask for exactly the maximum, then renew forever" the optimal strategy, which is the accretion the next requirement exists to bound
 
 #### Scenario: Issued scope never exceeds requested scope
 - GIVEN a request for scope S
 - WHEN a lease is issued
 - THEN the lease's scope is a subset of (or equal to) S
 - AND never a superset
+
+### Requirement: Renewal Accretion Bound
+A policy rule MAY declare a budget on the TOTAL lease duration it grants (`maxTotalDurationMs`, with a required `durationHalfLifeMs`). Where declared, the broker SHALL bound the sum of granted durations attributable to that rule, so that repeated short leases cannot assemble the standing permission this system exists to replace.
+
+The budget SHALL be keyed on the matched rule. It SHALL NOT be keyed on anything the agent reports — `taskId`, `agentId`, parent-lease lineage or a generation counter are all self-declared and unverified, and a budget an agent can reset by renaming itself is not a budget. It is not keyed on the granted scope either: scope is broker-controlled but splittable, since many narrow scopes union to a broad one while all of them match the same rule.
+
+#### Scenario: Repeated short leases cost what one long lease costs
+- GIVEN a rule with a total-duration budget of B
+- WHEN an agent requests many short leases in sequence under that rule
+- THEN the sum of granted durations is bounded by B (plus whatever has decayed back)
+- AND the bound holds however the agent varies its taskId or agentId between requests
+
+#### Scenario: A legitimate long task is clamped, not denied
+- GIVEN remaining headroom H that is less than the requested duration
+- WHEN the request is evaluated
+- THEN a lease of H is issued rather than the request being refused
+
+#### Scenario: Exhaustion is reported as exhaustion
+- GIVEN remaining headroom below the minimum grantable lease duration
+- WHEN a request is made
+- THEN it is DENIED with a reason naming the rule, and stating that headroom regenerates
+- AND a zero-length or sub-second lease is never issued in its place — that would be a denial dressed as a grant
+
+#### Scenario: Budget binds on every issuance path
+- GIVEN a veto-required rule carrying a budget
+- WHEN a pending request is approved by a human
+- THEN the granted duration is charged against the budget exactly as on the direct path
+- AND approval supplies the human consent the veto gate was waiting for; it does not grant authority the current policy would refuse
+
+#### Scenario: A declared budget is never silently unenforced
+- GIVEN a rule declaring a budget
+- WHEN the broker has no duration ledger wired
+- THEN issuance is REFUSED with a reason saying so, rather than a lease being granted unbudgeted
 
 ### Requirement: Lease Verification
 Before any action is permitted, the broker (or its enforcement point) SHALL verify the presented lease's authenticity, that it is unexpired, and that it has not been revoked — and SHALL reject the action if any check fails.

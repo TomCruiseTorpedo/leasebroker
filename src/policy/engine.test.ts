@@ -252,7 +252,12 @@ describe('DeclarativePolicyEngine — no-match denies', () => {
     expect(decision.effect).toBe('deny');
   });
 
-  it('denies when requested duration exceeds maxDurationMs', () => {
+  it('CLAMPS rather than denies when requested duration exceeds maxDurationMs', () => {
+    // This asserted a denial until 2026-07-28. Denying was an incentive bug:
+    // the only way to get a grant was to ask for at most the maximum, so the
+    // optimal agent strategy became "request exactly the maximum, then renew
+    // forever" — the standing-permission accretion the duration budget exists
+    // to stop. The policy was training the behaviour it meant to prevent.
     const rules: PolicyRule[] = [
       {
         ruleId: 'short-only',
@@ -262,7 +267,45 @@ describe('DeclarativePolicyEngine — no-match denies', () => {
       },
     ];
     const engine = new DeclarativePolicyEngine(rules);
-    expect(engine.evaluate(baseRequest).effect).toBe('deny'); // 60s > 30s
+    const decision = engine.evaluate(baseRequest); // asks for 60s
+
+    expect(decision.effect).toBe('grant');
+    expect(decision.grantedDurationMs).toBe(30_000);
+    expect(decision.reason).toMatch(/clamped/i);
+  });
+
+  it('clamps to the TIGHTEST matched rule when several apply', () => {
+    // A lease granted under several rules must respect the shortest of them,
+    // or bundling a permissive capability would relax a restrictive one.
+    const rules: PolicyRule[] = [
+      { ruleId: 'read-30s', effect: 'allow', capabilityKind: 'fs.read', maxDurationMs: 30_000 },
+      { ruleId: 'spend-10s', effect: 'allow', capabilityKind: 'spend', maxDurationMs: 10_000 },
+    ];
+    const engine = new DeclarativePolicyEngine(rules);
+    const decision = engine.evaluate({
+      agentId: 'agent-1',
+      taskId: 'task-1',
+      capabilities: [
+        { kind: 'fs.read', paths: ['./data/file.txt'] },
+        { kind: 'spend', currency: 'USD', capMinor: 100 },
+      ],
+      requestedDurationMs: 60_000,
+    });
+
+    expect(decision.effect).toBe('grant');
+    expect(decision.grantedDurationMs).toBe(10_000);
+    expect(decision.matchedRules?.map((r) => r.ruleId).sort()).toEqual(['read-30s', 'spend-10s']);
+  });
+
+  it('leaves the duration alone when it is already within the rule maximum', () => {
+    const rules: PolicyRule[] = [
+      { ruleId: 'long-ok', effect: 'allow', capabilityKind: 'fs.read', maxDurationMs: 120_000 },
+    ];
+    const engine = new DeclarativePolicyEngine(rules);
+    const decision = engine.evaluate(baseRequest); // 60s
+
+    expect(decision.grantedDurationMs).toBe(60_000);
+    expect(decision.reason).not.toMatch(/clamped/i);
   });
 
   it('denies when spend exceeds maxCapMinor', () => {

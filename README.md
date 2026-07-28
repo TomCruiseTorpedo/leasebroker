@@ -17,6 +17,23 @@ downstream server — there is no bypass-and-hope-someone-checks-the-trace
 step. If you're evaluating agent governance tools, ask whether a violation
 is *blocked* or only *logged*.
 
+### Renewal cannot rebuild standing permission
+
+A lease expiring is only half the story: if an agent can renew without limit, a
+thousand one-minute leases add up to standing permission assembled a minute at a
+time. A rule can therefore declare `maxTotalDurationMs` (with a
+`durationHalfLifeMs`) to bound the total lease time it hands out. Read it as a
+duty cycle — how much of wall-clock time this authority may be live.
+
+The budget is keyed on the **matched rule**, deliberately not on `taskId` or
+`agentId`: those are self-declared, so a budget keyed on them resets whenever
+the agent picks a new name. Spend decays continuously rather than resetting on a
+boundary, so headroom regenerates without a cliff to wait for.
+
+An over-long request is **clamped, not denied** — refusing it is what teaches an
+agent to ask for exactly the maximum and renew forever. Only genuine exhaustion
+denies, and it says so by name.
+
 ### Tamper-evident by construction
 
 Every lease event — request, decision, issuance, use, denial, revocation —

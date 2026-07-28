@@ -42,8 +42,18 @@ export function wireComponents(state: CliState, rulesFile?: string): WiredCompon
   const rules = rawRules.length > 0 ? loadRules(rawRules) : [];
   const policy = new DeclarativePolicyEngine(rules);
 
-  // Broker (wire via interfaces from contract)
-  const broker = new Broker(policy, signer, state.auditSink, state.pendingStore, kp.kid);
+  // Broker (wire via interfaces from contract).
+  // The duration ledger is passed unconditionally: a rule that declares a
+  // budget with no ledger wired fails closed inside the broker, and there is
+  // no reason for the CLI to be the path that trips it.
+  const broker = new Broker(
+    policy,
+    signer,
+    state.auditSink,
+    state.pendingStore,
+    kp.kid,
+    state.durationLedger,
+  );
 
   // Enforcer
   const enforcer = new LeaseEnforcer(signer, state.revocationList, state.spendLedger);

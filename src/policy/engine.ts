@@ -34,6 +34,7 @@ import type {
   Capability,
   Decision,
   LeaseRequest,
+  MatchedRule,
   PolicyEngine,
   PolicyRule,
 } from '../contract/index.js';
@@ -68,6 +69,15 @@ export class DeclarativePolicyEngine implements PolicyEngine {
     let aggregateEffect: 'grant' | 'veto-required' = 'grant';
     let topRuleId: string | undefined;
 
+    // Every rule that matched, deduplicated by ruleId — one rule can cover
+    // several capabilities in the same request and must only be charged once.
+    const matchedRules = new Map<string, MatchedRule>();
+
+    // The tightest single-lease bound across all matched rules. Starts at the
+    // requested duration and only ever shrinks: a lease granted under several
+    // rules must respect the shortest of them.
+    let grantedDurationMs = request.requestedDurationMs;
+
     for (const cap of request.capabilities) {
       const matched = this.#findMatchingRule(request, cap);
 
@@ -77,6 +87,27 @@ export class DeclarativePolicyEngine implements PolicyEngine {
           reason: `No matching allow-rule for capability kind '${cap.kind}'` +
             (request.agentId ? ` (agent: '${request.agentId}')` : ''),
         };
+      }
+
+      // CLAMP, do not deny. An over-long request used to make the rule fail to
+      // match and fall through to a denial, which taught agents to request
+      // exactly the maximum and renew forever — the very accretion the
+      // duration budget exists to stop. Shortening the lease answers the
+      // request honestly instead of punishing it.
+      if (matched.maxDurationMs !== undefined) {
+        grantedDurationMs = Math.min(grantedDurationMs, matched.maxDurationMs);
+      }
+
+      if (!matchedRules.has(matched.ruleId)) {
+        matchedRules.set(matched.ruleId, {
+          ruleId: matched.ruleId,
+          ...(matched.maxTotalDurationMs !== undefined
+            ? { maxTotalDurationMs: matched.maxTotalDurationMs }
+            : {}),
+          ...(matched.durationHalfLifeMs !== undefined
+            ? { durationHalfLifeMs: matched.durationHalfLifeMs }
+            : {}),
+        });
       }
 
       if (matched.effect === 'veto-required') {
@@ -90,18 +121,27 @@ export class DeclarativePolicyEngine implements PolicyEngine {
       }
     }
 
+    const clamped = grantedDurationMs < request.requestedDurationMs;
+
     if (aggregateEffect === 'veto-required') {
       return {
         effect: 'veto-required',
         reason: `Request requires human veto approval (rule: ${topRuleId ?? 'unknown'})`,
         ruleId: topRuleId,
+        grantedDurationMs,
+        matchedRules: [...matchedRules.values()],
       };
     }
 
     return {
       effect: 'grant',
-      reason: 'All capabilities matched allow-rules',
+      reason: clamped
+        ? `All capabilities matched allow-rules; duration clamped to ${grantedDurationMs}ms ` +
+          `by rule maxDurationMs (requested ${request.requestedDurationMs}ms)`
+        : 'All capabilities matched allow-rules',
       ruleId: topRuleId,
+      grantedDurationMs,
+      matchedRules: [...matchedRules.values()],
     };
   }
 
@@ -147,13 +187,19 @@ export class DeclarativePolicyEngine implements PolicyEngine {
       return false;
     }
 
-    // Filter by requested duration
-    if (
-      rule.maxDurationMs !== undefined &&
-      request.requestedDurationMs > rule.maxDurationMs
-    ) {
-      return false;
-    }
+    // NO duration filter here, deliberately.
+    //
+    // This used to reject the rule when requestedDurationMs exceeded
+    // rule.maxDurationMs, so an over-long request fell through every rule and
+    // was denied. That is an incentive bug: the only way to get a grant was to
+    // ask for at most the maximum, so agents learned to ask for exactly the
+    // maximum and then renew, forever — which is precisely the standing-
+    // permission accretion the duration budget exists to stop. The policy was
+    // training the behaviour it meant to prevent.
+    //
+    // Duration is now a CLAMP applied in evaluate() rather than a match
+    // condition: the rule still matches and the lease is simply shortened.
+    // Asking for more than allowed gets you the allowance, not a refusal.
 
     // Kind-specific scope check
     return this.#scopeIsAllowed(rule, cap);
