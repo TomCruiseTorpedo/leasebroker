@@ -14,8 +14,10 @@
  *
  * Unknown tools:
  *   If the `toolActionResolver` returns `undefined` for a tool (i.e. the tool
- *   has no mapped Action), it is forwarded to the downstream transparently —
- *   no enforcement is applied.
+ *   has no mapped Action), the default is to forward it to the downstream
+ *   transparently — no enforcement is applied — and record a `passthrough`
+ *   audit event so the ungoverned call is counted rather than invisible.
+ *   Set `strictUnmappedTools` to refuse such calls instead.
  *
  * Usage:
  *   const proxy = new LeasebrokerProxy({ enforcer, audit, toolActionResolver });
@@ -60,6 +62,25 @@ export interface ProxyServerOptions {
    * If omitted, or when it returns `undefined`, calls are forwarded transparently.
    */
   toolActionResolver?: ToolActionResolver;
+  /**
+   * How to treat a tool with no mapped capability.
+   *
+   * `false` (default) — LOG AND ALLOW. The call is forwarded ungoverned and
+   * recorded as a `passthrough` audit event. Keeps the proxy transparent, so
+   * it can be dropped in front of an existing server without first enumerating
+   * every tool. The cost is that "everything is governed" is not true of a
+   * default deployment, which is why the passthrough event exists: the gap is
+   * counted rather than invisible.
+   *
+   * `true` — DENY. An unmapped tool is refused and recorded as a `denial`.
+   * Makes "no capability, no call" an actual invariant, at the price of the
+   * proxy being useless until every tool an agent needs is mapped.
+   *
+   * The default is permissive on purpose (decided 2026-07-30): adoption first,
+   * with the gap visible and one flag away from closed. Operators who need the
+   * stronger claim turn it on and configure to match.
+   */
+  strictUnmappedTools?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,20 +159,40 @@ export class LeasebrokerProxy {
 
       const action = this.opts.toolActionResolver?.(toolName, toolArgs);
 
-      // Unknown tool → forward transparently (no enforcement).
+      // Unknown tool — no capability is mapped to this name, so there is
+      // nothing to check the call against.
       //
-      // This path is UNGOVERNED by design today: no capability is mapped to
-      // the tool name, so there is nothing to check the call against. What it
-      // must not also be is INVISIBLE. Until now the call left no trace at
-      // all, so an operator reading the audit log saw a complete record of
-      // governed traffic with no indication that ungoverned traffic existed
-      // alongside it. Recording the call does not govern it — it makes the gap
-      // countable, which is what any decision about the gap has to rest on.
+      // Two behaviours, chosen by the operator (decided 2026-07-30):
       //
-      // LOGGING ONLY. Whether an unmapped tool should instead be DENIED is an
-      // open product decision (the README says deny-by-default, the code
-      // allows). Do not change the default here until that is settled.
+      //   default        LOG AND ALLOW. Forward ungoverned, record a
+      //                  `passthrough` event. The call is not governed, but it
+      //                  is COUNTED — an operator reading the audit log can see
+      //                  that ungoverned traffic exists rather than seeing only
+      //                  governed traffic and inferring there was no other kind.
+      //   strict         DENY. Refuse and record a `denial`.
+      //
+      // Permissive by default so the proxy can be dropped in front of an
+      // existing server without first enumerating every tool. That choice is
+      // exactly why the passthrough event is not optional: a fail-open default
+      // whose gap is invisible would footnote every security claim the product
+      // makes, whereas one whose gap is counted is a measurable, closable
+      // position. `--strict` closes it.
       if (action === undefined) {
+        if (this.opts.strictUnmappedTools === true) {
+          const reason =
+            'no capability mapped to this tool name, and strict mode refuses ungoverned calls';
+          this.appendEvent('denial', { toolName, reason });
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: `leasebroker: denied '${toolName}' — ${reason}. Map it to a capability in the tool resolver, or run without --strict to allow unmapped tools through as audited passthroughs.`,
+              },
+            ],
+          };
+        }
+
         this.appendEvent('passthrough', {
           toolName,
           reason: 'no capability mapped to this tool name — forwarded without a lease check',

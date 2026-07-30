@@ -461,6 +461,62 @@ describe('LeasebrokerProxy', () => {
     expect(events.some((e) => e.type === 'use')).toBe(false);
   });
 
+  it('STRICT mode denies an unmapped tool instead of forwarding it', async () => {
+    // The other half of the same decision. Default is log-and-allow so the
+    // proxy can sit in front of an existing server without every tool being
+    // enumerated first; strict makes "no capability, no call" a real invariant
+    // for operators who need that claim to be true.
+    const strictProxy = new LeasebrokerProxy({
+      enforcer,
+      audit,
+      strictUnmappedTools: true,
+      toolActionResolver: () => undefined, // nothing is mapped
+    });
+
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const [downClient, downServer] = InMemoryTransport.createLinkedPair();
+
+    const strictDownstream = new Server(
+      { name: 'strict-downstream', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    let downstreamCalls = 0;
+    strictDownstream.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+    strictDownstream.setRequestHandler(CallToolRequestSchema, () => {
+      downstreamCalls += 1;
+      return { content: [{ type: 'text' as const, text: 'should never run' }] };
+    });
+    await strictDownstream.connect(downServer);
+    await strictProxy.connect(serverSide, downClient);
+
+    try {
+      const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+      const token = sign(signer, lease);
+      await initSession(clientSide, token);
+
+      const response = await sendAndWait(clientSide, {
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'anything_at_all', arguments: {} },
+      });
+
+      const result = response['result'] as Record<string, unknown> | undefined;
+      expect(result?.['isError']).toBe(true);
+
+      // The call never reached the downstream — this is a refusal, not a
+      // forward-then-complain.
+      expect(downstreamCalls).toBe(0);
+
+      // Recorded as a denial, NOT a passthrough: nothing was passed through.
+      const events = audit.read();
+      expect(events.some((e) => e.type === 'denial' && e.detail['toolName'] === 'anything_at_all')).toBe(true);
+      expect(events.some((e) => e.type === 'passthrough')).toBe(false);
+    } finally {
+      await strictProxy.close().catch(() => {});
+      await strictDownstream.close().catch(() => {});
+    }
+  });
+
   // ── Out-of-scope deny ──────────────────────────────────────────────────
 
   it('denies an out-of-scope fs.read tool call', async () => {

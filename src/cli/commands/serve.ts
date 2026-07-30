@@ -36,13 +36,19 @@ export interface ServeOptions {
   downstreamCmd?: string;
   downstreamArgs?: string[];
   rulesFile?: string;
+  /**
+   * Refuse tools with no mapped capability instead of forwarding them as
+   * audited passthroughs. See `ProxyServerOptions.strictUnmappedTools`.
+   */
+  strict?: boolean;
 }
 
 /**
  * Default tool-to-action resolver for filesystem MCP tools.
  *
  * Maps the standard @modelcontextprotocol/server-filesystem tools to Actions.
- * Tools not in this map are forwarded transparently (no enforcement).
+ * Tools not in this map are forwarded transparently (no enforcement) and
+ * recorded as `passthrough` events — or refused outright under --strict.
  */
 function defaultToolActionResolver(
   toolName: string,
@@ -90,7 +96,19 @@ export async function cmdServe(state: CliState, opts: ServeOptions): Promise<voi
     enforcer,
     audit: state.auditSink,
     toolActionResolver,
+    strictUnmappedTools: opts.strict === true,
   });
+
+  // Say which posture is active. An operator who believes they are running
+  // fully governed while unmapped tools stream past is exactly the confusion
+  // the passthrough event exists to prevent, and a one-line banner is cheaper
+  // than reading the audit log to find out.
+  process.stderr.write(
+    opts.strict === true
+      ? 'leasebroker: strict mode — tools with no mapped capability will be DENIED\n'
+      : 'leasebroker: permissive mode — tools with no mapped capability are forwarded ' +
+          'UNGOVERNED and recorded as passthrough events. Use --strict to deny them.\n',
+  );
 
   const serverTransport = new StdioServerTransport();
 

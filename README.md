@@ -2,7 +2,18 @@
 
 A local-first broker that issues **time-bounded, narrowly-scoped capability leases** to AI agents and their tools/MCP servers — instead of standing, broad permissions.
 
-An agent asks for exactly the capability a task needs ("read these paths / call this API / spend ≤ $Y, for task T, for N minutes"); a policy decides; the broker issues a **signed, scoped, expiring lease** the agent must present to act. The broker enforces the scope in-path (MCP middleware proxy), logs every event to a tamper-evident audit trail, can **revoke** a lease mid-flight, and can require a **human veto** on high-risk grants. Deny-by-default, least-privilege.
+An agent asks for exactly the capability a task needs ("read these paths / call this API / spend ≤ $Y, for task T, for N minutes"); a policy decides; the broker issues a **signed, scoped, expiring lease** the agent must present to act. The broker enforces the scope in-path (MCP middleware proxy), logs every event to a tamper-evident audit trail, can **revoke** a lease mid-flight, and can require a **human veto** on high-risk grants. Least-privilege, and
+deny-by-default **where a capability is in play**: a request with no matching
+allow-rule is denied, and an action outside a lease's scope is refused.
+
+One qualification worth reading before you rely on that phrase. The in-path
+proxy governs tools you have **mapped to a capability**. A tool with no mapping
+has nothing to check against, and by default it is forwarded ungoverned and
+recorded as a `passthrough` audit event — visible and countable, but not
+stopped. That default exists so the proxy can sit in front of an existing
+server without every tool being enumerated first. Run `serve --strict` to deny
+unmapped tools instead, which makes "no capability, no call" an actual
+invariant at the cost of configuring every tool an agent needs.
 
 > Status: **shipped.** All lanes implemented and green: `tsc --noEmit`, `vitest`, `bun run build`, `node dist/cli/index.js --help`, and the end-to-end demo all pass.
 

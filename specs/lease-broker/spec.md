@@ -195,6 +195,20 @@ The broker SHALL record every request, decision, issuance, use, denial, and revo
 
 The proxy SHALL additionally record a `passthrough` event for every call it forwards WITHOUT a lease check because no capability is mapped to the tool name. Such a call is ungoverned by design; it must not also be invisible, or the log presents a complete record of governed traffic while giving no indication that ungoverned traffic exists beside it. A passthrough SHALL NOT be recorded as a `use`.
 
+The treatment of an unmapped tool SHALL be operator-selectable, defaulting to forward-and-record. Under strict mode the proxy SHALL refuse the call and record a `denial` instead, and SHALL NOT forward it downstream. The active posture SHALL be stated at startup, because an operator who believes they are running fully governed while unmapped tools stream past is the precise confusion the passthrough event exists to prevent.
+
+#### Scenario: Unmapped tool, default posture
+- GIVEN a tool with no mapped capability
+- WHEN it is called through the proxy
+- THEN the call is forwarded and a `passthrough` event is recorded
+- AND the deny-by-default guarantee is stated as applying where a capability is in play, never as an unqualified property of the proxy
+
+#### Scenario: Unmapped tool, strict posture
+- GIVEN the same tool and a proxy in strict mode
+- WHEN it is called
+- THEN the call is REFUSED, a `denial` is recorded, and the downstream is never reached
+- AND no `passthrough` event is recorded, because nothing was passed through
+
 #### Scenario: Full lifecycle is reconstructable
 - GIVEN a lease that is requested, granted, used twice, and revoked
 - WHEN the audit log is read back

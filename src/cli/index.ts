@@ -163,15 +163,22 @@ EXAMPLE
 leasebroker serve — start the enforce proxy
 
 USAGE
-  leasebroker serve [--downstream-cmd <cmd>] [--downstream-args <json>] [--rules-file <path>]
+  leasebroker serve [--downstream-cmd <cmd>] [--downstream-args <json>] [--rules-file <path>] [--strict]
 
 OPTIONS
   --downstream-cmd <cmd>      Command to run the downstream MCP server
   --downstream-args <json>    JSON array of args (default: [])
   --rules-file <path>         Path to policy rules JSON file
+  --strict                    DENY tools that have no mapped capability.
+                              Without it (the default) such tools are forwarded
+                              UNGOVERNED and recorded as passthrough audit
+                              events - visible, but not stopped. Strict makes
+                              "no capability, no call" an actual invariant, at
+                              the cost of needing every tool mapped first.
 
 EXAMPLE
   leasebroker serve --downstream-cmd npx --downstream-args '["@modelcontextprotocol/server-filesystem","./data"]'
+  leasebroker serve --strict --downstream-cmd npx --downstream-args '["@modelcontextprotocol/server-filesystem","./data"]'
 `.trim(),
 
   policy: `
@@ -367,11 +374,12 @@ async function main(): Promise<void> {
           'downstream-args': { type: 'string' as const },
           'rules-file': { type: 'string' as const },
           'state-dir': { type: 'string' as const },
+          strict: { type: 'boolean' as const },
         },
         strict: false,
-      }) as { values: Record<string, string | undefined> };
+      }) as { values: Record<string, string | boolean | undefined> };
       let downstreamArgs: string[] | undefined;
-      const rawDownstreamArgs = values['downstream-args'];
+      const rawDownstreamArgs = values['downstream-args'] as string | undefined;
       if (rawDownstreamArgs) {
         try {
           downstreamArgs = JSON.parse(rawDownstreamArgs) as string[];
@@ -382,9 +390,10 @@ async function main(): Promise<void> {
       }
       const state = loadState(resolvedStateDir);
       await cmdServe(state, {
-        downstreamCmd: values['downstream-cmd'],
+        downstreamCmd: values['downstream-cmd'] as string | undefined,
         downstreamArgs,
-        rulesFile: values['rules-file'],
+        rulesFile: values['rules-file'] as string | undefined,
+        strict: values['strict'] === true,
       });
       break;
     }
