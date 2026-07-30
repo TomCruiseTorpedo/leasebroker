@@ -27,6 +27,7 @@ import {
   saveState,
 } from './state.js';
 import { cmdAudit } from './commands/audit.js';
+import { agentScopedRuleWarning } from './wire.js';
 import { cmdRevoke } from './commands/revoke.js';
 
 // ---------------------------------------------------------------------------
@@ -260,5 +261,31 @@ describe('loadPolicyRules', () => {
     const custom = join(tmpDir, 'custom-rules.json');
     writeFileSync(custom, 'nope');
     expect(() => loadPolicyRules(tmpDir, custom)).toThrow(PolicyFileError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent-scoped rule warning (upstream-identity dependency)
+// ---------------------------------------------------------------------------
+
+describe('agentScopedRuleWarning', () => {
+  it('stays SILENT when no rule is agent-scoped', () => {
+    // Those policies do not depend on upstream identity at all, so warning
+    // about it would be noise that trains operators to ignore the notice.
+    expect(agentScopedRuleWarning([])).toBeNull();
+  });
+
+  it('names the specific rules, not just the general caveat', () => {
+    const text = agentScopedRuleWarning(['bot-read', 'bot-spend']);
+    expect(text).toContain('bot-read');
+    expect(text).toContain('bot-spend');
+  });
+
+  it('says agentId is self-declared and not verified here', () => {
+    const text = agentScopedRuleWarning(['r1']) ?? '';
+    expect(text).toMatch(/SELF-DECLARED/);
+    expect(text).toMatch(/established upstream/i);
+    // And that unaffected rules exist, so the note is scoped rather than alarming.
+    expect(text).toMatch(/without an agentId are unaffected/i);
   });
 });

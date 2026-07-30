@@ -30,7 +30,7 @@ import type { ToolActionResolver } from '../../enforce/index.js';
 import type { Action } from '../../contract/index.js';
 import type { CliState } from '../state.js';
 import { saveState } from '../state.js';
-import { wireComponents } from '../wire.js';
+import { wireComponents, agentScopedRuleWarning } from '../wire.js';
 
 export interface ServeOptions {
   downstreamCmd?: string;
@@ -88,7 +88,13 @@ export async function cmdServe(state: CliState, opts: ServeOptions): Promise<voi
     process.exit(1);
   }
 
-  const { enforcer } = wireComponents(state, opts.rulesFile);
+  const { enforcer, agentScopedRuleIds } = wireComponents(state, opts.rulesFile);
+
+  // Surface the upstream-identity dependency where it actually operates.
+  // Silent when no rule is agent-scoped, because those policies do not
+  // depend on it.
+  const identityNote = agentScopedRuleWarning(agentScopedRuleIds);
+  if (identityNote !== null) process.stderr.write(identityNote + '\n');
 
   const toolActionResolver: ToolActionResolver = defaultToolActionResolver;
 
