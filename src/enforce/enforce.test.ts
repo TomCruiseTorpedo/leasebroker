@@ -14,9 +14,11 @@
  *   - ProxyServer: over-cap deny + at-cap allowed
  */
 
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -655,5 +657,192 @@ describe('LeasebrokerProxy', () => {
     expect(result?.['isError']).toBeFalsy();
     const content = result?.['content'] as Array<{ text: string }> | undefined;
     expect(content?.[0]?.text).toBe('downstream says hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session binding over a REAL stdio transport
+// ---------------------------------------------------------------------------
+
+/**
+ * Regression coverage for the stdio session-binding defect.
+ *
+ * Every other proxy test above drives an InMemoryTransport with
+ * `proxyServerTransport.sessionId` ASSIGNED BY HAND (see beforeEach). That
+ * assignment is what made the suite green while `leasebroker serve` — which is
+ * stdio, and is the only transport the CLI ships — denied every mapped tool
+ * call in the field: the real StdioServerTransport never sets `sessionId`, so
+ * the token bound at initialize was filed under `undefined` and never found
+ * again.
+ *
+ * These tests therefore use the REAL StdioServerTransport class over real
+ * pipes, speaking real newline-delimited JSON framing, and assign no session
+ * identity anywhere. A test that supplies its own sessionId cannot fail the way
+ * production failed, so it is not coverage of this bug.
+ */
+describe('LeasebrokerProxy over a real stdio transport', () => {
+  let signer: PasetoV4PublicSigner;
+  let audit: InMemoryAuditSink;
+  let enforcer: LeaseEnforcer;
+  let mockDownstream: Server;
+  let proxyInstance: LeasebrokerProxy;
+
+  /** Client → proxy stdin, and proxy stdout → client. */
+  let toProxy: PassThrough;
+  let fromProxy: PassThrough;
+  /** Responses parsed off the proxy's stdout, keyed by JSON-RPC id. */
+  let responses: Map<number, Record<string, unknown>>;
+
+  beforeEach(async () => {
+    const kp = generateKeyPair('k1');
+    signer = new PasetoV4PublicSigner(kp);
+    audit = new InMemoryAuditSink();
+    enforcer = new LeaseEnforcer(signer, new InMemoryRevocationList(), new InMemorySpendLedger());
+
+    mockDownstream = new Server(
+      { name: 'mock-downstream', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    mockDownstream.setRequestHandler(CallToolRequestSchema, (req) => ({
+      content: [{ type: 'text' as const, text: `${req.params.name}: ok` }],
+    }));
+    const [proxyClientTransport, downstreamServerTransport] =
+      InMemoryTransport.createLinkedPair();
+    await mockDownstream.connect(downstreamServerTransport);
+
+    // The real stdio transport, over real pipes. No sessionId is set here —
+    // that is the whole point, and StdioServerTransport never sets one itself.
+    toProxy = new PassThrough();
+    fromProxy = new PassThrough();
+    const stdioTransport = new StdioServerTransport(toProxy, fromProxy);
+
+    responses = new Map();
+    let buffer = '';
+    fromProxy.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (line.trim() === '') continue;
+        const msg = JSON.parse(line) as Record<string, unknown>;
+        if (typeof msg['id'] === 'number') responses.set(msg['id'], msg);
+      }
+    });
+
+    proxyInstance = new LeasebrokerProxy({
+      enforcer,
+      audit,
+      toolActionResolver: (toolName, args) => {
+        if (toolName === 'read_file') {
+          const path = typeof args['path'] === 'string' ? args['path'] : '';
+          return { kind: 'fs.read', path };
+        }
+        return undefined;
+      },
+    });
+
+    await proxyInstance.connect(stdioTransport, proxyClientTransport);
+  });
+
+  afterEach(async () => {
+    await proxyInstance.close().catch(() => {});
+    await mockDownstream.close().catch(() => {});
+  });
+
+  /** Write one newline-delimited JSON-RPC message to the proxy's stdin. */
+  function writeMessage(msg: Record<string, unknown>): void {
+    toProxy.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
+  }
+
+  /** Wait for the response with the given id to appear on the proxy's stdout. */
+  async function awaitResponse(id: number): Promise<Record<string, unknown>> {
+    for (let i = 0; i < 200; i++) {
+      const hit = responses.get(id);
+      if (hit !== undefined) return hit;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`Timeout waiting for response to id=${id}`);
+  }
+
+  async function handshake(token: string): Promise<void> {
+    writeMessage({
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'stdio-test-client', version: '1.0.0' },
+        _meta: { 'x-lease-token': token },
+      },
+    });
+    await awaitResponse(1);
+    writeMessage({ method: 'notifications/initialized' });
+  }
+
+  it('binds the lease token presented at initialize and forwards an in-scope call', async () => {
+    const token = sign(signer, makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] }));
+    await handshake(token);
+
+    writeMessage({
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: '/data/report.txt' } },
+    });
+
+    const result = (await awaitResponse(2))['result'] as Record<string, unknown>;
+    const content = result['content'] as Array<{ text: string }>;
+
+    // The precise failure this guards: the binding is lost, so an in-scope call
+    // is refused for having no token rather than being forwarded.
+    expect(content[0]?.text).not.toContain('no lease token bound to session');
+    expect(result['isError']).toBeFalsy();
+    expect(content[0]?.text).toBe('read_file: ok');
+  });
+
+  it('still denies an out-of-scope call over stdio', async () => {
+    const token = sign(signer, makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] }));
+    await handshake(token);
+
+    writeMessage({
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: '/etc/shadow' } },
+    });
+
+    const result = (await awaitResponse(2))['result'] as Record<string, unknown>;
+    const content = result['content'] as Array<{ text: string }>;
+
+    // Restoring the binding must not cost enforcement: this has to be denied on
+    // SCOPE, not for a missing token.
+    expect(result['isError']).toBe(true);
+    expect(content[0]?.text).toContain('not permitted by the lease scope');
+  });
+
+  it('denies when the handshake presented no token at all', async () => {
+    writeMessage({
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'stdio-test-client', version: '1.0.0' },
+      },
+    });
+    await awaitResponse(1);
+    writeMessage({ method: 'notifications/initialized' });
+
+    writeMessage({
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: '/data/report.txt' } },
+    });
+
+    const result = (await awaitResponse(2))['result'] as Record<string, unknown>;
+    const content = result['content'] as Array<{ text: string }>;
+
+    // The shared binding key must not become a way to call with no lease.
+    expect(result['isError']).toBe(true);
+    expect(content[0]?.text).toContain('no lease token bound to session');
   });
 });
