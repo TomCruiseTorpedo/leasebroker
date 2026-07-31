@@ -10,7 +10,20 @@
  *   and uses it to enforce every subsequent tools/call in that session.
  *
  *   `extra.sessionId` is populated by the SDK from `transport.sessionId`
- *   (available in SDK v1.x low-level setRequestHandler).
+ *   (shared/protocol.ts builds `extra` with `sessionId: transport?.sessionId`).
+ *   Only some transports carry one: streamable HTTP sets it in stateful mode,
+ *   but the STDIO transport never does, and streamable HTTP in stateless mode
+ *   (`sessionIdGenerator: undefined`) does not either.  Keying the binding on
+ *   `sessionId` alone therefore broke enforcement outright on stdio — the
+ *   default MCP transport and the one `leasebroker serve` ships — because the
+ *   token was never recorded and every mapped call was denied.
+ *
+ *   Connections with no transport session identity bind under
+ *   SINGLE_CONNECTION_KEY instead.  That is sound rather than a fudge: an SDK
+ *   `Server` accepts exactly one transport at a time ("Already connected to a
+ *   transport ... use a separate Protocol instance per connection" —
+ *   Protocol.connect), so one proxy instance is always exactly one client
+ *   session, and a shared key cannot collide with a concurrent peer.
  *
  * Unknown tools:
  *   If the `toolActionResolver` returns `undefined` for a tool (i.e. the tool
@@ -87,14 +100,25 @@ export interface ProxyServerOptions {
 // LeasebrokerProxy
 // ---------------------------------------------------------------------------
 
+/**
+ * Binding key for a connection whose transport carries no session identity
+ * (stdio, or streamable HTTP in stateless mode).
+ *
+ * Contains a NUL, which no transport-supplied sessionId can contain, so it can
+ * never collide with a real one on a transport that does set it.
+ */
+const SINGLE_CONNECTION_KEY = '\u0000single-connection';
+
 export class LeasebrokerProxy {
   /** Low-level MCP server that clients connect to. */
   private readonly server: Server;
   /** MCP client that connects to the downstream MCP server. */
   private readonly downstreamClient: Client;
   /**
-   * Session token map: transport-level sessionId → lease token.
-   * Populated at initialize handshake.
+   * Session token map: binding key → lease token, set at the initialize
+   * handshake. The key is the transport-level sessionId when the transport
+   * supplies one, and SINGLE_CONNECTION_KEY when it does not (stdio, stateless
+   * HTTP) — see the note on session binding at the top of this file.
    */
   private readonly sessionTokens = new Map<string, string>();
 
@@ -127,8 +151,15 @@ export class LeasebrokerProxy {
       const rawMeta = request.params._meta as Record<string, unknown> | undefined;
       const token = rawMeta?.['x-lease-token'];
 
-      if (typeof token === 'string' && extra.sessionId !== undefined) {
-        this.sessionTokens.set(extra.sessionId, token);
+      // The handshake is authoritative for this connection's binding. A client
+      // that presents no token must not inherit one left behind by an earlier
+      // connection on a reused proxy instance, so the absent case CLEARS rather
+      // than leaves the previous binding standing.
+      const bindingKey = extra.sessionId ?? SINGLE_CONNECTION_KEY;
+      if (typeof token === 'string') {
+        this.sessionTokens.set(bindingKey, token);
+      } else {
+        this.sessionTokens.delete(bindingKey);
       }
 
       // Negotiate protocol version (same logic as the SDK's _oninitialize).
@@ -204,10 +235,9 @@ export class LeasebrokerProxy {
         return result as unknown as { content: (typeof result)['content'] };
       }
 
-      // Look up the lease token bound to this session.
-      const sessionId = extra.sessionId;
-      const token =
-        sessionId !== undefined ? this.sessionTokens.get(sessionId) : undefined;
+      // Look up the lease token bound to this session, under the same key the
+      // handshake bound it with.
+      const token = this.sessionTokens.get(extra.sessionId ?? SINGLE_CONNECTION_KEY);
 
       if (token === undefined) {
         this.appendEvent('denial', { toolName, reason: 'no lease token bound to session' });
