@@ -23,6 +23,7 @@ export type {
   AuditEventType,
   AuditEvent,
   VerifyResult,
+  SettleOutcome,
   Action,
   PolicyRule,
 } from './types.js';

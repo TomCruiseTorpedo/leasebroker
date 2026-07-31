@@ -167,7 +167,18 @@ export type AuditEventType =
    * happened. Conflating them would make the log claim governance it did not
    * perform, which is the most expensive kind of lie an audit trail can tell.
    */
-  | 'passthrough';
+  | 'passthrough'
+  /**
+   * A spend reservation handed back without being charged, because the
+   * authorized call did not land.
+   *
+   * Recorded rather than left silent for the same reason 'passthrough' is: a
+   * refund is the one path by which authorized work can end up costing nothing,
+   * so a downstream that fails often — or reports failure dishonestly — shows
+   * up as a refund rate an operator can read, instead of as an absence of 'use'
+   * events nobody would think to look for.
+   */
+  | 'refund';
 
 /** Shared fields for all audit events (hash-chained append-only log). */
 type AuditEventBase = {
@@ -196,7 +207,8 @@ export type AuditEvent =
   | (AuditEventBase & { type: 'use' })
   | (AuditEventBase & { type: 'denial' })
   | (AuditEventBase & { type: 'revocation' })
-  | (AuditEventBase & { type: 'passthrough' });
+  | (AuditEventBase & { type: 'passthrough' })
+  | (AuditEventBase & { type: 'refund' });
 
 // ---------------------------------------------------------------------------
 // VerifyResult
@@ -208,7 +220,34 @@ export type VerifyResult = {
   ok: boolean;
   /** Human-readable reason when `ok` is false. */
   reason?: string;
+  /**
+   * Set when the check placed a spend RESERVATION the caller is obliged to
+   * resolve — `Enforcer.settle` once the authorized work has landed, or
+   * `Enforcer.release` when it demonstrably has not.
+   *
+   * Present only from `Enforcer.checkAndReserve`. A caller that ignores it does
+   * not get free spend: the hold counts against the cap until it lapses, and
+   * `check` (which never sets this) charges immediately instead.
+   */
+  reservationId?: string;
 };
+
+// ---------------------------------------------------------------------------
+// SettleOutcome
+// ---------------------------------------------------------------------------
+
+/** Outcome of settling a spend reservation, distinct enough to audit. */
+export type SettleOutcome =
+  /** Charged while the hold was still live — the ordinary path. */
+  | 'settled'
+  /**
+   * Charged after the hold had lapsed. The headroom had already been handed
+   * back and may have been re-lent, so this settle can push spend past the cap.
+   * Worth surfacing: it means a downstream answered later than the hold TTL.
+   */
+  | 'settled-after-lapse'
+  /** No such reservation: already settled, already released, or never existed. */
+  | 'unknown';
 
 // ---------------------------------------------------------------------------
 // Action (used by Enforcer)
