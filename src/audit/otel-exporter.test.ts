@@ -17,8 +17,17 @@ import type { AuditEvent } from '../contract/index.js';
 import { InMemoryAuditSink } from './audit-sink.js';
 import { OtelExportingAuditSink } from './otel-exporter.js';
 
+// `leaseId` is always populated so one helper covers every kind: `issuance` and
+// `use` require it. These tests are about export, not attribution.
 function makeEvent(type: AuditEvent['type'], detail: Record<string, unknown> = {}): AuditEvent {
-  return { type, at: '2026-07-11T11:00:00.000Z', detail, prevHash: '', hash: '' };
+  return {
+    type,
+    at: '2026-07-11T11:00:00.000Z',
+    leaseId: 'lease-test',
+    detail,
+    prevHash: '',
+    hash: '',
+  };
 }
 
 /** Minimal in-memory Logger capturing emitted records. */

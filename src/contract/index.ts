@@ -22,6 +22,7 @@ export type {
   MatchedRule,
   AuditEventType,
   AuditEvent,
+  AuditEventInput,
   VerifyResult,
   SettleOutcome,
   Action,
@@ -38,6 +39,7 @@ export type {
   SpendLedger,
   DurationLedger,
   Enforcer,
+  EnforceResult,
 } from './interfaces.js';
 
 export {

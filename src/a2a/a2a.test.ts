@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { Action, Enforcer, VerifyResult } from '../contract/index.js';
+import type { Action, EnforceResult, Enforcer, Lease } from '../contract/index.js';
 import {
   attachLeaseToken,
   declaresLeaseExtension,
@@ -31,11 +31,22 @@ import {
 
 const ACTION: Action = { kind: 'fs.read', path: './data/report.csv' };
 
+/** The lease 'good-token' stands for — a permitted verdict must name one. */
+const STUB_LEASE: Lease = {
+  id: 'lease-stub-1',
+  agentId: 'agent-stub',
+  taskId: 'task-stub',
+  capabilities: [{ kind: 'fs.read', paths: ['./data/**'] }],
+  issuedAt: new Date(Date.now() - 1000).toISOString(),
+  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  kid: 'k1',
+};
+
 /** Enforcer stub: 'good-token' passes, everything else fails with a reason. */
 const fakeEnforcer: Pick<Enforcer, 'check'> = {
-  check(token: string): VerifyResult {
+  check(token: string): EnforceResult {
     return token === 'good-token'
-      ? { ok: true }
+      ? { ok: true, lease: STUB_LEASE }
       : { ok: false, reason: `token '${token}' failed verification` };
   },
 };

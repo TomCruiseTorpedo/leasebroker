@@ -212,6 +212,57 @@ export interface DurationLedger {
  *   4. Check action is within scope
  *   5. Check/accrue spend (SpendLedger) — for spend capabilities
  */
+/**
+ * The verdict from `Enforcer.check`, plus the lease the verdict was reached
+ * against.
+ *
+ * `lease` is present whenever the token's SIGNATURE validated — including on
+ * denials from expiry, revocation, scope or spend, where the token was genuine
+ * and simply did not authorize this call. It is absent only when there was
+ * nothing trustworthy to report: the signature failed, or the token did not
+ * decode.
+ *
+ * It is returned because the enforcer has already verified and decoded the
+ * lease, and a caller that needs signature-backed attribution for the audit
+ * trail would otherwise have to either repeat the verification or read the
+ * token's claims without checking them. The second option is the dangerous one:
+ * an audit record naming a lease id lifted from an unverified token reads as
+ * authoritative while asserting something no signature backs, and the hash
+ * chain seals it just as faithfully as a true one.
+ */
+export type EnforceResult =
+  | {
+      ok: true;
+      reason?: string;
+      /**
+       * REQUIRED on the permitted path. An enforcer only permits a call after
+       * verifying the token's signature, so at that point the lease is in hand
+       * and there is no honest reason to withhold it. Requiring it here is what
+       * lets a caller emit a `use` event — which the audit contract will not let
+       * it state without a lease id — with no defensive runtime check.
+       */
+      lease: Lease;
+      /**
+       * Set when the check placed a spend RESERVATION the caller is obliged to
+       * resolve — `Enforcer.settle` once the authorized work has landed, or
+       * `Enforcer.release` when it demonstrably has not. Present only from
+       * `Enforcer.checkAndReserve`; `check` charges immediately and never sets it.
+       */
+      reservationId?: string;
+    }
+  | {
+      ok: false;
+      reason?: string;
+      /** Present unless the signature failed or the token did not decode. */
+      lease?: Lease;
+      /**
+       * Never set on a denial: nothing was reserved. Declared (as `undefined`)
+       * so the field reads off the whole union without a narrowing step, as it
+       * did when this verdict was the flat `VerifyResult`.
+       */
+      reservationId?: undefined;
+    };
+
 export interface Enforcer {
   /**
    * Check whether the presented token authorises the given action.
@@ -222,9 +273,10 @@ export interface Enforcer {
    * will ever resolve. A caller that DOES own the downstream call — and can
    * therefore tell whether the work landed — should use `checkAndReserve`.
    *
-   * @returns `{ ok: true }` if permitted, or `{ ok: false, reason }` if denied.
+   * @returns `{ ok: true, lease }` if permitted, or `{ ok: false, reason }` if
+   *          denied — carrying `lease` too whenever the signature validated.
    */
-  check(token: string, action: Action): VerifyResult;
+  check(token: string, action: Action): EnforceResult;
 
   /**
    * As `check`, but spend is RESERVED rather than charged: the amount counts
@@ -237,9 +289,10 @@ export interface Enforcer {
    *
    * @param nowMs Epoch ms, passed in rather than read internally so hold expiry
    *   is testable without waiting for wall-clock time.
-   * @returns `{ ok: true, reservationId }` if permitted, else `{ ok: false, reason }`.
+   * @returns `{ ok: true, lease, reservationId }` if permitted, else `{ ok: false, reason }`
+    *   (carrying `lease` too whenever the signature validated).
    */
-  checkAndReserve?(token: string, action: Action, nowMs: number): VerifyResult;
+  checkAndReserve?(token: string, action: Action, nowMs: number): EnforceResult;
 
   /** Convert a reservation from `checkAndReserve` into settled spend. */
   settle?(reservationId: string, nowMs: number): SettleOutcome;

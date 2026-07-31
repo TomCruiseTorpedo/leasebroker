@@ -32,6 +32,13 @@
  *   audit event so the ungoverned call is counted rather than invisible.
  *   Set `strictUnmappedTools` to refuse such calls instead.
  *
+ * Audit attribution:
+ *   `leaseId` / `taskId` come from the VERIFIED lease the enforcer returns
+ *   alongside its verdict — never from an unverified peek at the token. A
+ *   denial from expiry, revocation or scope is still attributed; only a token
+ *   whose signature failed goes unattributed, so a forger cannot choose the
+ *   lease id that lands in the hash chain.
+ *
  * Usage:
  *   const proxy = new LeasebrokerProxy({ enforcer, audit, toolActionResolver });
  *   await proxy.connect(clientSideTransport, downstreamTransport);
@@ -49,8 +56,13 @@ import {
   ListToolsRequestSchema,
   SUPPORTED_PROTOCOL_VERSIONS,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { Action, AuditEvent, AuditSink, Enforcer } from '../contract/index.js';
-import { peekClaimsUnverified } from '../signing/paseto.js';
+import type {
+  Action,
+  AuditEvent,
+  AuditEventInput,
+  AuditSink,
+  Enforcer,
+} from '../contract/index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -212,7 +224,7 @@ export class LeasebrokerProxy {
         if (this.opts.strictUnmappedTools === true) {
           const reason =
             'no capability mapped to this tool name, and strict mode refuses ungoverned calls';
-          this.appendEvent('denial', { toolName, reason });
+          this.appendEvent({ type: 'denial', detail: { toolName, reason } });
           return {
             isError: true,
             content: [
@@ -224,9 +236,12 @@ export class LeasebrokerProxy {
           };
         }
 
-        this.appendEvent('passthrough', {
-          toolName,
-          reason: 'no capability mapped to this tool name — forwarded without a lease check',
+        this.appendEvent({
+          type: 'passthrough',
+          detail: {
+            toolName,
+            reason: 'no capability mapped to this tool name — forwarded without a lease check',
+          },
         });
         const result = await this.downstreamClient.callTool({
           name: toolName,
@@ -240,19 +255,14 @@ export class LeasebrokerProxy {
       const token = this.sessionTokens.get(extra.sessionId ?? SINGLE_CONNECTION_KEY);
 
       if (token === undefined) {
-        this.appendEvent('denial', { toolName, reason: 'no lease token bound to session' });
+        this.appendEvent({
+          type: 'denial',
+          detail: { toolName, reason: 'no lease token bound to session' },
+        });
         return this.denyResult('no lease token bound to session');
       }
 
-      // Attribution fields for the audit trail (workflow report joins on
-      // these). Unverified peek — fine for `use` (check() passes right after,
-      // so the claims are signature-backed) and advisory-only for denials
-      // (a forged token mis-attributes its own denial, nothing else).
-      const claims = peekClaimsUnverified(token);
-      const claimLeaseId = typeof claims?.['id'] === 'string' ? claims['id'] : undefined;
-      const claimTaskId = typeof claims?.['taskId'] === 'string' ? claims['taskId'] : undefined;
-
-      // Run the enforcer.
+      // Run the enforcer. It returns the VERIFIED lease alongside its verdict.
       //
       // RESERVE, don't charge — enforcement runs before the downstream call, so
       // a charge taken here is taken for work that has not happened yet. The
@@ -266,22 +276,36 @@ export class LeasebrokerProxy {
         this.opts.enforcer.checkAndReserve?.(token, action, Date.now()) ??
         this.opts.enforcer.check(token, action);
 
+      // Attribution fields for the audit trail (workflow report joins on
+      // these), taken from that verified lease — never from an unverified peek
+      // at the token. A denial from expiry, revocation or scope still carries
+      // them; only a token whose signature failed goes unattributed, which is
+      // the point: a forger must not be able to write a lease id of their
+      // choosing into a hash-chained log.
       if (!result.ok) {
         const reason = result.reason ?? 'enforcement denied';
-        this.appendEvent(
-          'denial',
-          { toolName, reason, action, ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}) },
-          claimLeaseId,
-        );
+        this.appendEvent({
+          type: 'denial',
+          ...(result.lease !== undefined ? { leaseId: result.lease.id } : {}),
+          detail: {
+            toolName,
+            reason,
+            action,
+            ...(result.lease !== undefined ? { taskId: result.lease.taskId } : {}),
+          },
+        });
         return this.denyResult(reason);
       }
 
       // Permitted: emit use event and forward.
-      this.appendEvent(
-        'use',
-        { toolName, action, ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}) },
-        claimLeaseId,
-      );
+      //
+      // `result.ok` narrows `lease` to present, so the attribution a `use` event
+      // requires is guaranteed by the types rather than by a runtime guard.
+      this.appendEvent({
+        type: 'use',
+        leaseId: result.lease.id,
+        detail: { toolName, action, taskId: result.lease.taskId },
+      });
       // Resolve the spend reservation on the way back out.
       //
       // WHY A REPORTED FAILURE REFUNDS, AND WHY THAT IS NOT THE TRUST INVERSION
@@ -308,16 +332,16 @@ export class LeasebrokerProxy {
         if (reservationId !== undefined) {
           if (downstream.isError === true) {
             this.opts.enforcer.release?.(reservationId);
-            this.appendEvent(
-              'refund',
-              {
+            this.appendEvent({
+              type: 'refund',
+              leaseId: result.lease.id,
+              detail: {
                 toolName,
                 action,
                 reason: 'downstream reported the call as failed',
-                ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}),
+                taskId: result.lease.taskId,
               },
-              claimLeaseId,
-            );
+            });
           } else {
             const outcome = this.opts.enforcer.settle?.(reservationId, Date.now());
             // A settle that lands after its hold lapsed can push spend past the
@@ -325,16 +349,16 @@ export class LeasebrokerProxy {
             // The money was really spent, so it is recorded — but an operator
             // seeing this repeatedly has a downstream slower than the hold TTL.
             if (outcome === 'settled-after-lapse') {
-              this.appendEvent(
-                'use',
-                {
+              this.appendEvent({
+                type: 'use',
+                leaseId: result.lease.id,
+                detail: {
                   toolName,
                   action,
                   note: 'spend settled after its reservation hold had lapsed — the downstream answered later than the ledger hold TTL, and this settlement may carry the lease past its cap',
-                  ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}),
+                  taskId: result.lease.taskId,
                 },
-                claimLeaseId,
-              );
+              });
             }
           }
         }
@@ -346,16 +370,16 @@ export class LeasebrokerProxy {
         // error path to the client; only the money handling is new.
         if (reservationId !== undefined) {
           this.opts.enforcer.release?.(reservationId);
-          this.appendEvent(
-            'refund',
-            {
+          this.appendEvent({
+            type: 'refund',
+            leaseId: result.lease.id,
+            detail: {
               toolName,
               action,
               reason: 'downstream call did not complete',
-              ...(claimTaskId !== undefined ? { taskId: claimTaskId } : {}),
+              taskId: result.lease.taskId,
             },
-            claimLeaseId,
-          );
+          });
         }
         throw err;
       }
@@ -399,16 +423,18 @@ export class LeasebrokerProxy {
     };
   }
 
-  private appendEvent(
-    type: AuditEvent['type'],
-    detail: Record<string, unknown>,
-    leaseId?: string,
-  ): void {
+  /**
+   * Append one audit event.
+   *
+   * Takes the whole event as one object rather than `(type, detail, leaseId?)`
+   * so the discriminant narrows on the literal `type`, which is what lets the
+   * contract require `leaseId` on the kinds that cannot be stated without it.
+   * A widened `type` parameter would silently accept an unattributed `use`.
+   */
+  private appendEvent(input: AuditEventInput): void {
     const event: AuditEvent = {
-      type,
+      ...input,
       at: new Date().toISOString(),
-      ...(leaseId !== undefined ? { leaseId } : {}),
-      detail,
       prevHash: '',
       hash: '',
     };

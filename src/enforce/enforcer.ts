@@ -43,6 +43,7 @@
 import { minimatch } from 'minimatch';
 import type {
   Action,
+  EnforceResult,
   Enforcer,
   Lease,
   RevocationList,
@@ -77,9 +78,15 @@ export class LeaseEnforcer implements Enforcer {
    * For callers that own the downstream call and can report its outcome, use
    * `checkAndReserve` instead — see the header note.
    *
-   * @returns `{ ok: true }` if permitted, `{ ok: false, reason }` if denied.
+   * Every return after the signature check carries the verified `lease`, so a
+   * caller can attribute its audit record without repeating the verification or
+   * resorting to an unverified peek at the token's claims. A denial from expiry,
+   * revocation, scope or spend is still attributable — that token was genuine.
+   *
+   * @returns `{ ok: true, lease }` if permitted, `{ ok: false, reason }` if
+   *          denied — with `lease` whenever the signature validated.
    */
-  check(token: string, action: Action): VerifyResult {
+  check(token: string, action: Action): EnforceResult {
     return this.evaluate(token, action, undefined);
   }
 
@@ -101,7 +108,7 @@ export class LeaseEnforcer implements Enforcer {
    *   `{ ok: true }` when it is not (nothing to reserve), else
    *   `{ ok: false, reason }`.
    */
-  checkAndReserve(token: string, action: Action, nowMs: number): VerifyResult {
+  checkAndReserve(token: string, action: Action, nowMs: number): EnforceResult {
     return this.evaluate(token, action, nowMs);
   }
 
@@ -122,28 +129,30 @@ export class LeaseEnforcer implements Enforcer {
    * check needs and an immediate charge does not, so the two cannot be
    * configured into disagreement.
    */
-  private evaluate(token: string, action: Action, nowMs: number | undefined): VerifyResult {
+  private evaluate(token: string, action: Action, nowMs: number | undefined): EnforceResult {
     // ── Step 1: Verify signature ───────────────────────────────────────────
     const verifyResult = this.signer.verify(token);
     if (!('lease' in verifyResult)) {
-      return verifyResult; // already { ok: false, reason }
+      // Nothing verified — deliberately no lease, so the caller cannot
+      // attribute this denial to an id that no signature backs.
+      return { ok: false, ...(verifyResult.reason !== undefined ? { reason: verifyResult.reason } : {}) };
     }
     const { lease } = verifyResult;
 
     // ── Step 2: Check not expired ──────────────────────────────────────────
     if (new Date() >= new Date(lease.expiresAt)) {
-      return { ok: false, reason: 'lease has expired' };
+      return { ok: false, reason: 'lease has expired', lease };
     }
 
     // ── Step 3: Check not revoked ──────────────────────────────────────────
     if (this.revocationList.isRevoked(lease.id)) {
-      return { ok: false, reason: 'lease has been revoked' };
+      return { ok: false, reason: 'lease has been revoked', lease };
     }
 
     // ── Step 4: Scope check ────────────────────────────────────────────────
     const scopeResult = checkScope(lease, action);
     if (!scopeResult.ok) {
-      return scopeResult;
+      return { ok: false, reason: scopeResult.reason, lease };
     }
 
     // ── Step 5: Spend charge or hold (spend actions only) ──────────────────
@@ -162,19 +171,19 @@ export class LeaseEnforcer implements Enforcer {
       if (nowMs === undefined) {
         const accrued = this.spendLedger.accrue(lease.id, action.amountMinor);
         if (!accrued) {
-          return { ok: false, reason: 'spend cap exceeded' };
+          return { ok: false, reason: 'spend cap exceeded', lease };
         }
-        return { ok: true };
+        return { ok: true, lease };
       }
 
       const reservationId = this.spendLedger.reserve(lease.id, action.amountMinor, nowMs);
       if (reservationId === undefined) {
-        return { ok: false, reason: 'spend cap exceeded' };
+        return { ok: false, reason: 'spend cap exceeded', lease };
       }
-      return { ok: true, reservationId };
+      return { ok: true, lease, reservationId };
     }
 
-    return { ok: true };
+    return { ok: true, lease };
   }
 }
 

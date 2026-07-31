@@ -184,7 +184,20 @@ export type AuditEventType =
 type AuditEventBase = {
   /** ISO 8601 timestamp of the event. */
   at: string;
-  /** Lease ID, if applicable. */
+  /**
+   * Lease ID.
+   *
+   * Optional on the base because several event kinds are raised before any
+   * lease exists — `request` and `decision` precede issuance and carry
+   * `requestId` instead, and a `passthrough` had nothing verified to attribute.
+   * The kinds that DO always act under a specific lease re-declare it as
+   * required in the union below.
+   *
+   * Whatever writes this must have it from a VERIFIED lease. The hash chain
+   * seals a misattributed record exactly as faithfully as a true one, so an id
+   * lifted from an unverified token is worse than no id at all: it reads as
+   * authoritative while asserting something no signature backs.
+   */
   leaseId?: string;
   /** Request ID, if applicable. */
   requestId?: string;
@@ -199,16 +212,47 @@ type AuditEventBase = {
 /**
  * Discriminated union of all audit event kinds.
  * Every event carries `prevHash` and `hash` forming a tamper-evident hash chain.
+ *
+ * `issuance` and `use` re-declare `leaseId` as REQUIRED. Both are, by
+ * definition, statements about one specific lease — an issuance names the lease
+ * it minted, and a `use` asserts that a lease was verified and the call fell
+ * within its scope. Neither claim is meaningful without saying which lease, so
+ * the type refuses to express it. This is compile-time only: `eventCanonical`
+ * already omits the key when absent, so no emitted byte and no stored chain
+ * changes.
+ *
+ * The rest stay optional because they are genuinely raised without a lease in
+ * hand: `request` and `decision` precede issuance, a `denial` may be refusing a
+ * token that never verified, and a `passthrough` is the record of a call that
+ * was never checked against anything.
  */
 export type AuditEvent =
   | (AuditEventBase & { type: 'request' })
   | (AuditEventBase & { type: 'decision' })
-  | (AuditEventBase & { type: 'issuance' })
-  | (AuditEventBase & { type: 'use' })
+  | (AuditEventBase & { type: 'issuance'; leaseId: string })
+  | (AuditEventBase & { type: 'use'; leaseId: string })
   | (AuditEventBase & { type: 'denial' })
   | (AuditEventBase & { type: 'revocation' })
   | (AuditEventBase & { type: 'passthrough' })
   | (AuditEventBase & { type: 'refund' });
+
+/**
+ * Distributes `Omit` across a union instead of collapsing it to the common
+ * keys, so each member keeps its own discriminant and its own `leaseId`
+ * requirement.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/**
+ * An audit event as a CALLER supplies it — everything except the fields the
+ * sink owns and always overwrites (`at`, `prevHash`, `hash`).
+ *
+ * Taking this as a single parameter is what makes the per-kind `leaseId` rule
+ * enforceable. A helper with a widened `type: AuditEvent['type']` parameter
+ * cannot narrow the discriminant, so it type-checks a `use` event with no lease
+ * id; passing the whole event as one object narrows on the literal instead.
+ */
+export type AuditEventInput = DistributiveOmit<AuditEvent, 'at' | 'prevHash' | 'hash'>;
 
 // ---------------------------------------------------------------------------
 // VerifyResult

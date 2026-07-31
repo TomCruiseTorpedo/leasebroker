@@ -325,8 +325,17 @@ describe('anchor store', () => {
 // Verification against a real hash-chained log
 // ---------------------------------------------------------------------------
 
+// `leaseId` is always populated so one helper covers every kind: `issuance` and
+// `use` require it. These tests are about anchoring, not attribution.
 function makeEvent(type: AuditEvent['type'], detail: Record<string, unknown> = {}): AuditEvent {
-  return { type, at: '2026-07-11T09:00:00.000Z', detail, prevHash: '', hash: '' };
+  return {
+    type,
+    at: '2026-07-11T09:00:00.000Z',
+    leaseId: 'lease-test',
+    detail,
+    prevHash: '',
+    hash: '',
+  };
 }
 
 /** Build a hash-chained log of n events via the real sink. */
