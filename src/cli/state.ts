@@ -9,7 +9,7 @@
  * Override with --state-dir or LEASEBROKER_STATE_DIR env var.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LeaseRequest, PolicyRule } from '../contract/index.js';
 import { InMemoryAuditSink, parseStoredAuditJsonl } from '../audit/index.js';
@@ -370,4 +370,107 @@ export function saveState(state: CliState): void {
   saveRevocationList(state.stateDir, state.revocationList);
   saveSpendLedger(state.stateDir, state.spendLedger);
   saveDurationLedger(state.stateDir, state.durationLedger);
+}
+
+// ---------------------------------------------------------------------------
+// Serve session
+// ---------------------------------------------------------------------------
+
+/**
+ * A revocation list that reads `revoked.json` through on every check.
+ *
+ * `serve` is long-lived and `revoke` is a separate process, so a list loaded
+ * once at startup cannot see a lease revoked while the proxy is up: the
+ * revocation would not take effect until a restart. This one folds the file in
+ * before each answer.
+ *
+ * Ids are only ever added. Revocation is monotone, so a file that goes missing,
+ * is truncated, or fails to parse mid-session leaves what was already learned
+ * in force instead of quietly un-revoking it.
+ */
+export class DiskBackedRevocationList extends InMemoryRevocationList {
+  constructor(private readonly path: string) {
+    super();
+    this.refresh();
+  }
+
+  override isRevoked(leaseId: string): boolean {
+    this.refresh();
+    return super.isRevoked(leaseId);
+  }
+
+  private refresh(): void {
+    let ids: unknown;
+    try {
+      ids = JSON.parse(readFileSync(this.path, 'utf8'));
+    } catch {
+      return; // absent or unreadable: keep what is already known
+    }
+    if (!Array.isArray(ids)) return;
+    for (const id of ids) {
+      if (typeof id === 'string') super.revoke(id);
+    }
+  }
+}
+
+export interface ServeSession {
+  /** State to wire the proxy from. Its revocation list reads through to disk. */
+  state: CliState;
+  /**
+   * Persist what this session changed: its audit events, merged onto whatever
+   * the log holds now. Idempotent. Throws {@link AuditTamperError}, writing
+   * nothing, if the log on disk fails stored-chain verification.
+   */
+  save(): void;
+}
+
+/**
+ * Open the state directory for a long-running `serve` process.
+ *
+ * `loadState` + `saveState` is right for a command that runs and exits. It is
+ * wrong for `serve`: the process holds its load-time snapshot for hours while
+ * `request` and `revoke` change the directory under it, and `saveState` at
+ * shutdown rewrites every file from that stale snapshot. A lease revoked
+ * mid-session came back to life, and the audit events other processes wrote
+ * (including the revocation record) were dropped.
+ *
+ * So a session owns only what it changes. Today that is its audit events: it
+ * never mutates revocations, pending requests or the duration ledger, and its
+ * tool resolver maps no `spend` action, so the spend ledger is untouched too.
+ * If `serve` ever starts changing any of those, persist it here with merge
+ * semantics, not by rewriting the file from a snapshot.
+ */
+export function openServeSession(stateDir: string): ServeSession {
+  const state = loadState(stateDir);
+  state.revocationList = new DiskBackedRevocationList(join(stateDir, 'revoked.json'));
+
+  // Events present at load are already on disk. Everything after is this session's.
+  let persisted = state.auditSink.readVerbatim().length;
+
+  return {
+    state,
+    save(): void {
+      const mine = state.auditSink.readVerbatim().slice(persisted);
+      if (mine.length === 0) return;
+
+      // Re-read the log as it is NOW, verified, and append onto its tail. The
+      // chain is recomputed only for the session's own new events, after the
+      // stored chain has been checked; a tampered log is never re-chained.
+      const { sink, integrity } = loadAuditSink(stateDir);
+      if (integrity === 'tampered') {
+        throw new AuditTamperError(
+          `refusing to save session: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
+            'Overwriting it would destroy the tamper evidence. Nothing was written.',
+        );
+      }
+      for (const event of mine) sink.append({ ...event, prevHash: '', hash: '' });
+
+      const events = sink.read();
+      const target = join(stateDir, 'audit.jsonl');
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync(tmp, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+      renameSync(tmp, target);
+      persisted = state.auditSink.readVerbatim().length;
+    },
+  };
 }
