@@ -28,8 +28,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { LeasebrokerProxy } from '../../enforce/index.js';
 import type { ToolActionResolver } from '../../enforce/index.js';
 import type { Action } from '../../contract/index.js';
-import type { CliState } from '../state.js';
-import { saveState } from '../state.js';
+import type { ServeSession } from '../state.js';
 import { wireComponents, agentScopedRuleWarning } from '../wire.js';
 
 export interface ServeOptions {
@@ -76,7 +75,8 @@ function defaultToolActionResolver(
   }
 }
 
-export async function cmdServe(state: CliState, opts: ServeOptions): Promise<void> {
+export async function cmdServe(session: ServeSession, opts: ServeOptions): Promise<void> {
+  const { state } = session;
   // A long-running proxy persists its session's audit events at shutdown; on a
   // tampered log that save is refused, so the session's events would be lost.
   // Fail closed at startup instead.
@@ -143,9 +143,17 @@ export async function cmdServe(state: CliState, opts: ServeOptions): Promise<voi
     await proxy.connect(serverTransport, proxyClientTransport);
   }
 
-  // Persist any audit events written during the session on clean exit.
+  // Persist this session's audit events on clean exit. The session merges them
+  // onto the log as it is now rather than rewriting the state directory from the
+  // snapshot taken at startup, which would undo anything `request` and `revoke`
+  // did while this process was up. If the log was tampered with meanwhile the
+  // save refuses; say so rather than exit silently with the events unsaved.
   const cleanup = (): void => {
-    saveState(state);
+    try {
+      session.save();
+    } catch (err) {
+      process.stderr.write(`leasebroker: ${(err as Error).message}\n`);
+    }
     proxy.close().catch(() => {/* ignore */});
   };
 

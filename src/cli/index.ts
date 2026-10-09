@@ -20,7 +20,7 @@
 
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
-import { loadState, resolveStateDir } from './state.js';
+import { loadState, openServeSession, resolveStateDir } from './state.js';
 import { cmdRequest } from './commands/request.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdDeny } from './commands/deny.js';
@@ -388,8 +388,8 @@ async function main(): Promise<void> {
           process.exit(1);
         }
       }
-      const state = loadState(resolvedStateDir);
-      await cmdServe(state, {
+      const session = openServeSession(resolvedStateDir);
+      await cmdServe(session, {
         downstreamCmd: values['downstream-cmd'] as string | undefined,
         downstreamArgs,
         rulesFile: values['rules-file'] as string | undefined,
