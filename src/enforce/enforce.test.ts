@@ -511,6 +511,65 @@ describe('LeasebrokerProxy', () => {
     expect(useEvent?.detail['taskId']).toBe('task-test');
   });
 
+  // ── Attribution is signature-backed, not a claims peek ─────────────────
+  //
+  // Regression: `leaseId` / `taskId` were previously read via
+  // `peekClaimsUnverified`, so a token that failed verification still wrote the
+  // lease id IT named into the hash chain. A forger could therefore choose the
+  // id their own denial was filed under. The enforcer now returns the VERIFIED
+  // lease, and a token that does not verify yields no attribution at all.
+  it('does NOT attribute a denial to the lease id inside an unverifiable token', async () => {
+    // Signed by a different key: the claims decode, but nothing in this
+    // proxy's keyring backs them.
+    const foreign = new PasetoV4PublicSigner(generateKeyPair('k1'));
+    const forged = foreign.issue(
+      makeLease({
+        id: 'lease-forged-not-ours',
+        taskId: 'task-forged-not-ours',
+        capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }],
+      }),
+    );
+
+    await initSession(clientTransport, forged);
+
+    await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: '/data/readme.txt' } },
+    });
+
+    const denial = audit.read().find((e) => e.type === 'denial');
+    expect(denial).toBeDefined();
+    expect(denial?.leaseId).toBeUndefined();
+    // Specifically: the forged identifiers must appear nowhere in the record.
+    expect(JSON.stringify(denial)).not.toContain('lease-forged-not-ours');
+    expect(JSON.stringify(denial)).not.toContain('task-forged-not-ours');
+  });
+
+  it('still attributes a denial when the token verified but did not authorize', async () => {
+    // The complement: an out-of-scope call under a genuine lease stays fully
+    // attributable — dropping the peek must not cost legitimate attribution.
+    const lease = makeLease({
+      id: 'lease-genuine-1',
+      taskId: 'task-genuine-1',
+      capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }],
+    });
+    const token = sign(signer, lease);
+
+    await initSession(clientTransport, token);
+
+    await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'read_file', arguments: { path: '/secrets/key.pem' } },
+    });
+
+    const denial = audit.read().find((e) => e.type === 'denial');
+    expect(denial).toBeDefined();
+    expect(denial?.leaseId).toBe('lease-genuine-1');
+    expect(denial?.detail['taskId']).toBe('task-genuine-1');
+  });
+
   // ── Unmapped tool: ungoverned, but no longer invisible ─────────────────
 
   it('emits exactly one passthrough event for an unmapped tool, and still forwards', async () => {
@@ -900,6 +959,30 @@ describe('LeasebrokerProxy', () => {
     const retryResult = retry['result'] as Record<string, unknown> | undefined;
     expect(retryResult?.['isError']).toBeFalsy();
     expect(spendLedger.spent(lease.id)).toBe(100);
+  });
+
+  it('attributes the refund for a call that threw to the verified lease', async () => {
+    // The thrown-call path is a separate emit site from the reported-failure
+    // refund, so it needs its own pin: `leaseId` is optional on a `refund`, which
+    // means the compiler cannot notice if this site stops attributing.
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+    downstreamFailures.add('charge_api');
+
+    await initSession(clientTransport, token);
+    await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 60 } },
+    });
+
+    const refunds = audit.read().filter((e) => e.type === 'refund');
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]?.detail['reason']).toBe('downstream call did not complete');
+    expect(refunds[0]?.leaseId).toBe(lease.id);
+    expect(refunds[0]?.detail['taskId']).toBe(lease.taskId);
   });
 
   it('refunds and records the refund when the downstream reports the call failed', async () => {

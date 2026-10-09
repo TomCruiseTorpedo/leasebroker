@@ -23,6 +23,9 @@ import { InMemorySpendLedger } from './spend-ledger.js';
 /**
  * Build a minimal AuditEvent for a given type.
  * The `prevHash` and `hash` fields are intentionally empty — the sink overwrites them.
+ *
+ * `leaseId` is always populated so one helper covers every kind: `issuance` and
+ * `use` require it. These tests are about chain integrity, not attribution.
  */
 function makeEvent(
   type: AuditEvent['type'],
@@ -31,6 +34,7 @@ function makeEvent(
   return {
     type,
     at: new Date().toISOString(),
+    leaseId: 'lease-test',
     detail,
     prevHash: '',
     hash: '',
@@ -242,6 +246,7 @@ describe('InMemoryAuditSink', () => {
       const spurious: AuditEvent = {
         type: 'use',
         at: new Date().toISOString(),
+        leaseId: 'lease-injected',
         detail: { injected: true },
         prevHash: events[0]?.hash ?? '',
         hash: 'not-a-real-sha256-hash',
