@@ -470,3 +470,125 @@ describe('InMemorySpendLedger', () => {
     expect(ledger.accrue('lease-1', 600)).toBe(true); // 900 <= 1000 — allowed
   });
 });
+
+// ---------------------------------------------------------------------------
+// SpendLedger — reserve / settle / release
+// ---------------------------------------------------------------------------
+
+describe('InMemorySpendLedger reservations', () => {
+  const TTL = 1000;
+  const T0 = 10_000;
+  let ledger: InMemorySpendLedger;
+
+  beforeEach(() => {
+    ledger = new InMemorySpendLedger(TTL);
+    ledger.setCap('lease-1', 1000);
+  });
+
+  it('a hold consumes cap headroom before anything is settled', () => {
+    // The point of reserving at authorize time: the cap must bound work that is
+    // authorized-but-unfinished, not merely work that completed. If holds did
+    // not count, a caller could authorize unlimited concurrent spend.
+    expect(ledger.reserve('lease-1', 800, T0)).toBeDefined();
+
+    expect(ledger.spent('lease-1')).toBe(0); // nothing billed yet
+    expect(ledger.reserved('lease-1', T0)).toBe(800); // but 800 is held
+
+    // 800 held + 300 = 1100 > 1000 — refused while the first is outstanding.
+    expect(ledger.reserve('lease-1', 300, T0)).toBeUndefined();
+  });
+
+  it('settle converts a hold into billed spend', () => {
+    const id = ledger.reserve('lease-1', 400, T0);
+    expect(id).toBeDefined();
+
+    expect(ledger.settle(id as string, T0)).toBe('settled');
+    expect(ledger.spent('lease-1')).toBe(400);
+    expect(ledger.reserved('lease-1', T0)).toBe(0);
+  });
+
+  it('release hands the headroom back without billing it', () => {
+    const id = ledger.reserve('lease-1', 900, T0);
+    expect(ledger.release(id as string)).toBe(true);
+
+    expect(ledger.spent('lease-1')).toBe(0);
+    expect(ledger.reserved('lease-1', T0)).toBe(0);
+    // Headroom is usable again, which is the property that matters.
+    expect(ledger.reserve('lease-1', 1000, T0)).toBeDefined();
+  });
+
+  it('release is idempotent and reports an unknown id rather than throwing', () => {
+    const id = ledger.reserve('lease-1', 100, T0) as string;
+    expect(ledger.release(id)).toBe(true);
+    expect(ledger.release(id)).toBe(false);
+    expect(ledger.release('never-existed')).toBe(false);
+  });
+
+  it('an unresolved hold lapses after the TTL and returns the headroom', () => {
+    ledger.reserve('lease-1', 1000, T0);
+    expect(ledger.reserved('lease-1', T0)).toBe(1000);
+
+    // A downstream that never answers must not freeze the budget forever.
+    expect(ledger.reserved('lease-1', T0 + TTL)).toBe(0);
+    expect(ledger.reserve('lease-1', 1000, T0 + TTL)).toBeDefined();
+  });
+
+  it('a settle after the hold lapsed still charges — the TTL frees the hold, not the debt', () => {
+    // THE FREE-WORK GUARD. If a lapse deleted the reservation, a downstream
+    // could stall past the TTL, then succeed, and the charge would have nowhere
+    // to land — unlimited authorized work for the price of being slow. The
+    // lapse returns headroom; the obligation survives until it is resolved.
+    const id = ledger.reserve('lease-1', 600, T0) as string;
+
+    expect(ledger.reserved('lease-1', T0 + TTL)).toBe(0); // hold is gone
+    expect(ledger.settle(id, T0 + TTL)).toBe('settled-after-lapse'); // debt is not
+    expect(ledger.spent('lease-1')).toBe(600);
+  });
+
+  it('a lapsed settle is allowed to carry spend past the cap, and then bites', () => {
+    // The honest consequence of a non-atomic reserve/settle plus a TTL: the
+    // headroom was handed back and re-lent, so both charges land. Recording the
+    // overshoot beats dropping a real charge (free work) or clamping it
+    // (understating a bill that was actually incurred).
+    const slow = ledger.reserve('lease-1', 600, T0) as string;
+    const other = ledger.reserve('lease-1', 1000, T0 + TTL) as string; // re-lent
+    ledger.settle(other, T0 + TTL);
+    ledger.settle(slow, T0 + TTL);
+
+    expect(ledger.spent('lease-1')).toBe(1600); // over the 1000 cap, truthfully
+    // Failing closed from here: no further spend is authorized.
+    expect(ledger.reserve('lease-1', 1, T0 + TTL)).toBeUndefined();
+    expect(ledger.accrue('lease-1', 1, T0 + TTL)).toBe(false);
+  });
+
+  it('accrue counts outstanding holds against the cap', () => {
+    // An immediate charge must not spend headroom an in-flight call is holding.
+    ledger.reserve('lease-1', 700, T0);
+    expect(ledger.accrue('lease-1', 400, T0)).toBe(false); // 700 held + 400 > 1000
+    expect(ledger.accrue('lease-1', 300, T0)).toBe(true); // 700 held + 300 = 1000
+  });
+
+  it('reserve with the same key returns the existing hold instead of double-holding', () => {
+    // Seam for the proxy-owned correlator a Multi Round-Trip retry will need
+    // (migration decision D3). Scope is deliberately narrow: it dedupes a retry
+    // that arrives while the first attempt is still in flight. It does NOT
+    // dedupe one arriving after settlement — that needs a memo of settled keys,
+    // which is D3's to add.
+    const first = ledger.reserve('lease-1', 600, T0, 'call-abc');
+    const retry = ledger.reserve('lease-1', 600, T0, 'call-abc');
+
+    expect(retry).toBe(first);
+    expect(ledger.reserved('lease-1', T0)).toBe(600); // held once, not twice
+  });
+
+  it('settle reports unknown for an id that was already resolved', () => {
+    const id = ledger.reserve('lease-1', 100, T0) as string;
+    expect(ledger.settle(id, T0)).toBe('settled');
+    expect(ledger.settle(id, T0)).toBe('unknown'); // no double charge
+    expect(ledger.spent('lease-1')).toBe(100);
+  });
+
+  it('reserve throws when no cap has been registered, like accrue', () => {
+    expect(() => ledger.reserve('unknown-lease', 10, T0)).toThrow(/cap/i);
+  });
+});

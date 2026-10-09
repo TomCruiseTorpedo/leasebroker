@@ -13,6 +13,7 @@ import type {
   Decision,
   Lease,
   LeaseRequest,
+  SettleOutcome,
   VerifyResult,
 } from './types.js';
 
@@ -139,16 +140,33 @@ export interface RevocationList {
  * Spend is NOT stored in the lease (which is immutable after issuance).
  * The lease carries the cap; the SpendLedger tracks accrued spend.
  * Money is always in integer minor units — no float arithmetic.
+ *
+ * This interface is the IMMEDIATE-CHARGE surface. The two-phase surface
+ * (`reserve` → `settle`/`release`, which is what gives a failed downstream call
+ * its money back) lives on the concrete `InMemorySpendLedger`, alongside the
+ * reasoning for the split. Enforcement points already depend on the concrete
+ * class, so the two-phase methods are deliberately not required here: an
+ * external implementor that only provides `accrue` keeps working and keeps
+ * failing closed.
  */
 export interface SpendLedger {
   /**
    * Attempt to accrue `amountMinor` against the lease's spend cap.
+   *
+   * The charge is IRREVERSIBLE. If the caller owns a downstream call that can
+   * fail, prefer the concrete ledger's `reserve`/`settle`/`release`.
+   *
+   * @param nowMs Epoch ms, used only to tell live spend reservations from
+   *   lapsed ones. Defaults to the wall clock.
    * @returns `true` if the accrual is within the cap and was recorded.
    * @returns `false` if accruing would breach the cap (action must be denied).
    */
-  accrue(leaseId: string, amountMinor: number): boolean;
+  accrue(leaseId: string, amountMinor: number, nowMs?: number): boolean;
 
-  /** Return the total amount accrued against this lease in minor units. */
+  /**
+   * Return the total SETTLED spend against this lease in minor units.
+   * Amounts merely reserved are not included.
+   */
   spent(leaseId: string): number;
 }
 
@@ -197,7 +215,35 @@ export interface DurationLedger {
 export interface Enforcer {
   /**
    * Check whether the presented token authorises the given action.
+   *
+   * Spend is charged IMMEDIATELY and IRREVERSIBLY here. That is deliberate for
+   * callers that do not own the downstream call and so have nothing to settle
+   * (`a2a/gate.ts` is one): they fail closed rather than placing a hold nobody
+   * will ever resolve. A caller that DOES own the downstream call — and can
+   * therefore tell whether the work landed — should use `checkAndReserve`.
+   *
    * @returns `{ ok: true }` if permitted, or `{ ok: false, reason }` if denied.
    */
   check(token: string, action: Action): VerifyResult;
+
+  /**
+   * As `check`, but spend is RESERVED rather than charged: the amount counts
+   * against the cap immediately, and the caller must resolve it with `settle`
+   * (the work landed) or `release` (it did not).
+   *
+   * Optional so that adding it is not a breaking change for existing
+   * implementors. Callers must fall back to `check` when it is absent — the
+   * fallback charges immediately, which is the safe direction.
+   *
+   * @param nowMs Epoch ms, passed in rather than read internally so hold expiry
+   *   is testable without waiting for wall-clock time.
+   * @returns `{ ok: true, reservationId }` if permitted, else `{ ok: false, reason }`.
+   */
+  checkAndReserve?(token: string, action: Action, nowMs: number): VerifyResult;
+
+  /** Convert a reservation from `checkAndReserve` into settled spend. */
+  settle?(reservationId: string, nowMs: number): SettleOutcome;
+
+  /** Hand a reservation's headroom back without charging it. */
+  release?(reservationId: string): void;
 }

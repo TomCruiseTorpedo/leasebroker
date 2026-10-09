@@ -215,6 +215,86 @@ describe('LeaseEnforcer', () => {
     const result = enforcer.check(token, { kind: 'spend', currency: 'EUR', amountMinor: 10 });
     expect(result.ok).toBe(false);
   });
+
+  // ── check vs checkAndReserve ───────────────────────────────────────────
+
+  it('check charges immediately and hands out no reservation', () => {
+    // Callers outside the settle protocol — `a2a/gate.ts` returns an `allow`
+    // verdict and never sees whether the work happened — must keep charging up
+    // front. Handing them a reservation would mean placing holds nobody
+    // settles, every one of which the TTL would eventually hand back, turning
+    // real spend into free spend.
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+
+    const result = enforcer.check(token, { kind: 'spend', currency: 'USD', amountMinor: 70 });
+    expect(result.ok).toBe(true);
+    expect(result.reservationId).toBeUndefined();
+    expect(spendLedger.spent(lease.id)).toBe(70); // billed, not held
+  });
+
+  it('checkAndReserve holds the spend rather than billing it, and release gives it back', () => {
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+    const now = Date.now();
+
+    const result = enforcer.checkAndReserve(
+      token,
+      { kind: 'spend', currency: 'USD', amountMinor: 100 },
+      now,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.reservationId).toBeDefined();
+    expect(spendLedger.spent(lease.id)).toBe(0); // held, not billed
+    expect(spendLedger.reserved(lease.id, now)).toBe(100);
+
+    // While held, the cap is fully consumed — authorized work is bounded.
+    const blocked = enforcer.checkAndReserve(
+      token,
+      { kind: 'spend', currency: 'USD', amountMinor: 1 },
+      now,
+    );
+    expect(blocked.ok).toBe(false);
+
+    enforcer.release(result.reservationId as string);
+    expect(spendLedger.spent(lease.id)).toBe(0);
+    expect(
+      enforcer.checkAndReserve(token, { kind: 'spend', currency: 'USD', amountMinor: 100 }, now).ok,
+    ).toBe(true);
+  });
+
+  it('checkAndReserve settles into billed spend', () => {
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+    const now = Date.now();
+
+    const result = enforcer.checkAndReserve(
+      token,
+      { kind: 'spend', currency: 'USD', amountMinor: 55 },
+      now,
+    );
+    expect(enforcer.settle(result.reservationId as string, now)).toBe('settled');
+    expect(spendLedger.spent(lease.id)).toBe(55);
+  });
+
+  it('checkAndReserve reserves nothing for a non-spend action', () => {
+    const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+    const token = sign(signer, lease);
+
+    const result = enforcer.checkAndReserve(
+      token,
+      { kind: 'fs.read', path: '/data/file.txt' },
+      Date.now(),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.reservationId).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -303,8 +383,11 @@ describe('LeasebrokerProxy', () => {
   /** Downstream responses by tool name — set per test. */
   const downstreamResponses = new Map<
     string,
-    { content: Array<{ type: 'text'; text: string }> }
+    { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
   >();
+
+  /** Tool names the mock downstream should throw on — set per test. */
+  const downstreamFailures = new Set<string>();
 
   beforeEach(async () => {
     // Build fresh instances for isolation.
@@ -324,6 +407,7 @@ describe('LeasebrokerProxy', () => {
 
     // Mock downstream server.
     downstreamResponses.clear();
+    downstreamFailures.clear();
     mockDownstream = new Server(
       { name: 'mock-downstream', version: '1.0.0' },
       { capabilities: { tools: {} } },
@@ -354,6 +438,9 @@ describe('LeasebrokerProxy', () => {
 
     mockDownstream.setRequestHandler(CallToolRequestSchema, (req) => {
       const toolName = req.params.name;
+      if (downstreamFailures.has(toolName)) {
+        throw new Error(`downstream exploded on ${toolName}`);
+      }
       const canned = downstreamResponses.get(toolName) ?? {
         content: [{ type: 'text' as const, text: `${toolName}: ok` }],
       };
@@ -517,6 +604,146 @@ describe('LeasebrokerProxy', () => {
     }
   });
 
+  // ── Session binding on transports with no session identity ─────────────
+
+  /**
+   * Build a proxy whose server-side transport carries NO sessionId, the way
+   * stdio behaves. Returns the client side plus a cleanup hook.
+   */
+  async function connectSessionlessProxy(): Promise<{
+    clientSide: InMemoryTransport;
+    downstreamCalls: () => number;
+    cleanup: () => Promise<void>;
+  }> {
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const [downClient, downServer] = InMemoryTransport.createLinkedPair();
+    // Deliberately NOT setting serverSide.sessionId — that is the whole point.
+
+    let calls = 0;
+    const sessionlessDownstream = new Server(
+      { name: 'sessionless-downstream', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    sessionlessDownstream.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+    sessionlessDownstream.setRequestHandler(CallToolRequestSchema, () => {
+      calls += 1;
+      return { content: [{ type: 'text' as const, text: 'file contents' }] };
+    });
+
+    const sessionlessProxy = new LeasebrokerProxy({
+      enforcer,
+      audit,
+      toolActionResolver: (toolName, args) => {
+        if (toolName === 'read_file') {
+          const path = typeof args['path'] === 'string' ? args['path'] : '';
+          return { kind: 'fs.read', path };
+        }
+        return undefined;
+      },
+    });
+
+    await sessionlessDownstream.connect(downServer);
+    await sessionlessProxy.connect(serverSide, downClient);
+
+    return {
+      clientSide,
+      downstreamCalls: () => calls,
+      cleanup: async () => {
+        await sessionlessProxy.close().catch(() => {});
+        await sessionlessDownstream.close().catch(() => {});
+      },
+    };
+  }
+
+  it('enforces normally on a transport that carries no session id (stdio)', async () => {
+    // stdio NEVER sets transport.sessionId — and it is both the default MCP
+    // transport and the one `leasebroker serve` ships. Keying the token
+    // binding on sessionId alone means the handshake token is never recorded,
+    // so every mapped call is denied for want of a token that was in fact
+    // presented. The proxy is unusable on its own default transport.
+    const { clientSide, downstreamCalls, cleanup } = await connectSessionlessProxy();
+    try {
+      const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+      const token = sign(signer, lease);
+      await initSession(clientSide, token);
+
+      const response = await sendAndWait(clientSide, {
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'read_file', arguments: { path: '/data/readme.txt' } },
+      });
+
+      const result = response['result'] as Record<string, unknown> | undefined;
+      expect(result?.['isError']).toBeFalsy();
+      const content = result?.['content'] as Array<{ text: string }> | undefined;
+      expect(content?.[0]?.text).toBe('file contents');
+      expect(downstreamCalls()).toBe(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('still denies an out-of-scope call on a transport with no session id', async () => {
+    // The binding fix must not become a bypass: binding under a shared key is
+    // about FINDING the token, not about trusting it. Scope is still enforced.
+    const { clientSide, downstreamCalls, cleanup } = await connectSessionlessProxy();
+    try {
+      const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+      const token = sign(signer, lease);
+      await initSession(clientSide, token);
+
+      const response = await sendAndWait(clientSide, {
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'read_file', arguments: { path: '/secrets/key.pem' } },
+      });
+
+      const result = response['result'] as Record<string, unknown> | undefined;
+      expect(result?.['isError']).toBe(true);
+      expect(downstreamCalls()).toBe(0);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('a handshake presenting no token clears any binding rather than inheriting it', async () => {
+    // The handshake is authoritative for the connection's binding. On a reused
+    // proxy instance under a shared binding key, leaving a previous token
+    // standing would let a tokenless client inherit someone else's lease —
+    // which is the failure mode a shared key has to be explicitly closed
+    // against, and the reason the absent case DELETES.
+    const { clientSide, downstreamCalls, cleanup } = await connectSessionlessProxy();
+    try {
+      const lease = makeLease({ capabilities: [{ kind: 'fs.read', paths: ['/data/**'] }] });
+      await initSession(clientSide, sign(signer, lease), 1);
+
+      // Re-handshake with NO token in _meta.
+      await sendAndWait(clientSide, {
+        id: 2,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-11-25',
+          capabilities: {},
+          clientInfo: { name: 'test-client', version: '1.0.0' },
+        },
+      });
+
+      const response = await sendAndWait(clientSide, {
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'read_file', arguments: { path: '/data/readme.txt' } },
+      });
+
+      const result = response['result'] as Record<string, unknown> | undefined;
+      expect(result?.['isError']).toBe(true);
+      const content = result?.['content'] as Array<{ text: string }> | undefined;
+      expect(content?.[0]?.text).toMatch(/no lease token/i);
+      expect(downstreamCalls()).toBe(0);
+    } finally {
+      await cleanup();
+    }
+  });
+
   // ── Out-of-scope deny ──────────────────────────────────────────────────
 
   it('denies an out-of-scope fs.read tool call', async () => {
@@ -628,6 +855,111 @@ describe('LeasebrokerProxy', () => {
     expect(overCapResult?.['isError']).toBe(true);
     const content = overCapResult?.['content'] as Array<{ text: string }> | undefined;
     expect(content?.[0]?.text).toMatch(/cap/i);
+  });
+
+  // ── Spend: a failed downstream call must not consume the budget ────────
+
+  it('releases the spend reservation when the downstream call fails', async () => {
+    // THE DEFECT THIS PINS. Enforcement runs BEFORE the downstream call, so a
+    // call that never succeeded had already consumed the caller's cap, with no
+    // path to give it back. The cap is the only spend control in the system,
+    // so an unreliable downstream silently ratcheted the caller to zero.
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+    downstreamFailures.add('charge_api');
+
+    await initSession(clientTransport, token);
+
+    const failed = await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 60 } },
+    });
+
+    // The caller got an error, not a result — no work was delivered.
+    const failedResult = failed['result'] as Record<string, unknown> | undefined;
+    expect(failed['error'] ?? failedResult?.['isError']).toBeTruthy();
+
+    // Settled spend is what the caller is actually billed for. Nothing
+    // succeeded, so nothing is billed.
+    expect(spendLedger.spent(lease.id)).toBe(0);
+
+    // The assertion that matters: headroom is USABLE again, not merely
+    // reported as zero. A counter reading 0 while the cap stays consumed
+    // would pass the check above and still be the bug.
+    downstreamFailures.clear();
+    const retry = await sendAndWait(clientTransport, {
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 100 } },
+    });
+    const retryResult = retry['result'] as Record<string, unknown> | undefined;
+    expect(retryResult?.['isError']).toBeFalsy();
+    expect(spendLedger.spent(lease.id)).toBe(100);
+  });
+
+  it('refunds and records the refund when the downstream reports the call failed', async () => {
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+    downstreamResponses.set('charge_api', {
+      isError: true,
+      content: [{ type: 'text', text: 'payment provider refused' }],
+    });
+
+    await initSession(clientTransport, token);
+
+    await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 100 } },
+    });
+
+    expect(spendLedger.spent(lease.id)).toBe(0);
+
+    // `spent` alone cannot tell a released hold from one still dangling — both
+    // read 0, because `spent` reports SETTLED spend. The headroom has to be
+    // shown usable, or this test passes on a reservation that was never
+    // released and the cap stays silently consumed.
+    expect(spendLedger.reserved(lease.id, Date.now())).toBe(0);
+
+    downstreamResponses.delete('charge_api');
+    const retry = await sendAndWait(clientTransport, {
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 100 } },
+    });
+    expect((retry['result'] as Record<string, unknown> | undefined)?.['isError']).toBeFalsy();
+    expect(spendLedger.spent(lease.id)).toBe(100);
+
+    // The refund is COUNTED, not silent. A refund is the one path by which
+    // authorized work can end up costing nothing, so an operator needs to be
+    // able to see the rate rather than infer it from missing 'use' events.
+    const refunds = audit.read().filter((e) => e.type === 'refund');
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]?.leaseId).toBe('lease-test-1');
+    expect(refunds[0]?.detail['toolName']).toBe('charge_api');
+  });
+
+  it('does not emit a refund when the downstream call succeeds', async () => {
+    const lease = makeLease({
+      capabilities: [{ kind: 'spend', currency: 'USD', capMinor: 100 }],
+    });
+    const token = sign(signer, lease);
+
+    await initSession(clientTransport, token);
+
+    await sendAndWait(clientTransport, {
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'charge_api', arguments: { currency: 'USD', amount: 40 } },
+    });
+
+    expect(spendLedger.spent(lease.id)).toBe(40);
+    expect(audit.read().some((e) => e.type === 'refund')).toBe(false);
   });
 
   // ── Unknown tool: pass through ─────────────────────────────────────────
