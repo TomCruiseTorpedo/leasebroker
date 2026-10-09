@@ -20,7 +20,7 @@
 
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
-import { loadState, openServeSession, resolveStateDir } from './state.js';
+import { loadState, openServeSession, resolveStateDir, withStateLock } from './state.js';
 import { cmdRequest } from './commands/request.js';
 import { cmdApprove } from './commands/approve.js';
 import { cmdDeny } from './commands/deny.js';
@@ -301,10 +301,14 @@ async function main(): Promise<void> {
         },
         strict: false,
       }) as { values: Record<string, string | undefined> };
-      const state = loadState(resolvedStateDir);
-      await cmdRequest(state, {
-        request: values['request'],
-        rulesFile: values['rules-file'],
+      // Every command that changes state loads, changes and saves inside one lock;
+      // see withStateLock for what goes wrong otherwise.
+      await withStateLock(resolvedStateDir, async () => {
+        const state = loadState(resolvedStateDir);
+        await cmdRequest(state, {
+          request: values['request'],
+          rulesFile: values['rules-file'],
+        });
       });
       break;
     }
@@ -321,8 +325,9 @@ async function main(): Promise<void> {
         console.error('Error: approve requires a <reqId> argument');
         process.exit(1);
       }
-      const state = loadState(resolvedStateDir);
-      cmdApprove(state, { reqId });
+      await withStateLock(resolvedStateDir, () => {
+        cmdApprove(loadState(resolvedStateDir), { reqId });
+      });
       break;
     }
 
@@ -338,8 +343,9 @@ async function main(): Promise<void> {
         console.error('Error: deny requires a <reqId> argument');
         process.exit(1);
       }
-      const state = loadState(resolvedStateDir);
-      cmdDeny(state, { reqId });
+      await withStateLock(resolvedStateDir, () => {
+        cmdDeny(loadState(resolvedStateDir), { reqId });
+      });
       break;
     }
 
@@ -361,8 +367,9 @@ async function main(): Promise<void> {
         console.error('Error: revoke requires a <leaseId> argument');
         process.exit(1);
       }
-      const state = loadState(resolvedStateDir);
-      cmdRevoke(state, { leaseId });
+      await withStateLock(resolvedStateDir, () => {
+        cmdRevoke(loadState(resolvedStateDir), { leaseId });
+      });
       break;
     }
 
@@ -411,11 +418,14 @@ async function main(): Promise<void> {
         },
         strict: false,
       }) as { values: Record<string, string | undefined> };
-      const state = loadState(resolvedStateDir);
-      cmdPolicy(state, {
-        subcommand,
-        rulesFile: values['rules-file'],
-      });
+      const runPolicy = (): void =>
+        cmdPolicy(loadState(resolvedStateDir), {
+          subcommand,
+          rulesFile: values['rules-file'],
+        });
+      // `load` writes policy.json; `show` only reads, so it does not queue behind a writer.
+      if (subcommand === 'load') await withStateLock(resolvedStateDir, runPolicy);
+      else runPolicy();
       break;
     }
 
