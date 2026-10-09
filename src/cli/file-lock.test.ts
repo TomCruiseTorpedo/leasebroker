@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireFileLock, FileLockTimeout, takeOverAbandonedLock } from './file-lock.js';
 
 let dir: string;
 let lock: string;
+
+/** The pid namespace a lock records for this process: a real value on Linux, none elsewhere. */
+const ownNamespace = (): string | null => {
+  try {
+    return readlinkSync('/proc/self/ns/pid');
+  } catch {
+    return null;
+  }
+};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'file-lock-'));
@@ -121,7 +130,7 @@ describe('a holder that is alive is never taken over', () => {
   // once, and the stalled one then commits a snapshot taken before the other's change. Measured: a
   // `revoke` reported success while a live holder was stalled, and the holder's later save erased it.
   const aliveRecord = (token = 'live-holder') =>
-    JSON.stringify({ pid: process.pid, host: hostname(), pidns: null, token });
+    JSON.stringify({ pid: process.pid, host: hostname(), pidns: ownNamespace(), token });
   const ageIt = () => {
     const old = new Date(Date.now() - 600_000);
     utimesSync(lock, old, old);
@@ -136,7 +145,7 @@ describe('a holder that is alive is never taken over', () => {
   });
 
   it('still takes over from a holder that has exited, however fresh the lock', () => {
-    writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: hostname(), pidns: null, token: 'dead' }));
+    writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, host: hostname(), pidns: ownNamespace(), token: 'dead' }));
     acquireFileLock(lock, { staleMs: 600_000, timeoutMs: 500 }).release();
   });
 
