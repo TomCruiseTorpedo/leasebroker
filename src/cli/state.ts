@@ -9,7 +9,7 @@
  * Override with --state-dir or LEASEBROKER_STATE_DIR env var.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LeaseRequest, PolicyRule } from '../contract/index.js';
 import { InMemoryAuditSink, parseStoredAuditJsonl } from '../audit/index.js';
@@ -19,6 +19,8 @@ import { InMemoryRevocationList } from '../audit/index.js';
 import { InMemorySpendLedger, InMemoryDurationLedger } from '../audit/index.js';
 import { generateKeyPair, keyPairFromSeed } from '../signing/index.js';
 import type { KeyPair } from '../signing/index.js';
+import { acquireFileLock, FileLockTimeout } from './file-lock.js';
+import type { FileLockOptions } from './file-lock.js';
 
 // ---------------------------------------------------------------------------
 // State directory resolution
@@ -61,11 +63,12 @@ function bytesToHex(bytes: Uint8Array): string {
 export function loadOrCreateKeyPair(stateDir: string): KeyPair {
   ensureDir(stateDir);
   const keysPath = join(stateDir, 'keys.json');
-  if (existsSync(keysPath)) {
+  const readKeys = (): KeyPair => {
     const stored = JSON.parse(readFileSync(keysPath, 'utf8')) as StoredKeys;
-    const secretKey = hexToBytes(stored.secretKeyHex);
-    return keyPairFromSeed(secretKey, stored.kid);
-  }
+    return keyPairFromSeed(hexToBytes(stored.secretKeyHex), stored.kid);
+  };
+  if (existsSync(keysPath)) return readKeys();
+
   // Generate a fresh key pair and persist it.
   const kp = generateKeyPair('k1');
   const stored: StoredKeys = {
@@ -73,7 +76,10 @@ export function loadOrCreateKeyPair(stateDir: string): KeyPair {
     secretKeyHex: bytesToHex(kp.secretKey),
     publicKeyHex: bytesToHex(kp.publicKey),
   };
-  writeFileSync(keysPath, JSON.stringify(stored, null, 2));
+  // Two first runs can both see no key. Install it exclusively so exactly one key is ever
+  // published and the loser adopts it: a lease signed with a key that lost the race would
+  // never verify.
+  if (!publishExclusively(keysPath, JSON.stringify(stored, null, 2), 0o600)) return readKeys();
   return kp;
 }
 
@@ -121,7 +127,7 @@ export function loadPolicyRules(stateDir: string, rulesFilePath?: string): Polic
 
 export function savePolicyRules(stateDir: string, rules: PolicyRule[]): void {
   ensureDir(stateDir);
-  writeFileSync(join(stateDir, 'policy.json'), JSON.stringify(rules, null, 2));
+  writeFileAtomic(join(stateDir, 'policy.json'), JSON.stringify(rules, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +159,7 @@ export function savePendingStore(stateDir: string, store: InMemoryPendingStore):
   for (const { reqId, request } of store.list()) {
     data[reqId] = request;
   }
-  writeFileSync(join(stateDir, 'pending.json'), JSON.stringify(data, null, 2));
+  writeFileAtomic(join(stateDir, 'pending.json'), JSON.stringify(data, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +208,7 @@ export function saveAuditSink(stateDir: string, sink: InMemoryAuditSink): void {
   ensureDir(stateDir);
   const events = sink.read();
   const jsonl = events.map((e) => JSON.stringify(e)).join('\n');
-  writeFileSync(join(stateDir, 'audit.jsonl'), jsonl ? jsonl + '\n' : '');
+  writeFileAtomic(join(stateDir, 'audit.jsonl'), jsonl ? jsonl + '\n' : '');
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +236,7 @@ export function saveRevocationList(stateDir: string, list: InMemoryRevocationLis
   // We use a private accessor via a cast to get all IDs without changing the interface.
   // Since we own the implementation, we add a small helper method.
   const ids = getRevocationIds(list);
-  writeFileSync(join(stateDir, 'revoked.json'), JSON.stringify(ids, null, 2));
+  writeFileAtomic(join(stateDir, 'revoked.json'), JSON.stringify(ids, null, 2));
 }
 
 /**
@@ -305,7 +311,7 @@ export function loadDurationLedger(stateDir: string): InMemoryDurationLedger {
 
 export function saveDurationLedger(stateDir: string, ledger: InMemoryDurationLedger): void {
   ensureDir(stateDir);
-  writeFileSync(join(stateDir, 'duration.json'), JSON.stringify(ledger.toJSON(), null, 2));
+  writeFileAtomic(join(stateDir, 'duration.json'), JSON.stringify(ledger.toJSON(), null, 2));
 }
 
 export function saveSpendLedger(stateDir: string, ledger: InMemorySpendLedger): void {
@@ -315,7 +321,7 @@ export function saveSpendLedger(stateDir: string, ledger: InMemorySpendLedger): 
   for (const [leaseId, entry] of internal.ledger.entries()) {
     data[leaseId] = { spent: entry.spent, cap: entry.cap };
   }
-  writeFileSync(join(stateDir, 'spend.json'), JSON.stringify(data, null, 2));
+  writeFileAtomic(join(stateDir, 'spend.json'), JSON.stringify(data, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +446,10 @@ export interface ServeSession {
  * If `serve` ever starts changing any of those, persist it here with merge
  * semantics, not by rewriting the file from a snapshot.
  */
-export function openServeSession(stateDir: string): ServeSession {
+export function openServeSession(
+  stateDir: string,
+  opts: { lockTimeoutMs?: number } = {},
+): ServeSession {
   const state = loadState(stateDir);
   state.revocationList = new DiskBackedRevocationList(join(stateDir, 'revoked.json'));
 
@@ -453,24 +462,125 @@ export function openServeSession(stateDir: string): ServeSession {
       const mine = state.auditSink.readVerbatim().slice(persisted);
       if (mine.length === 0) return;
 
-      // Re-read the log as it is NOW, verified, and append onto its tail. The
-      // chain is recomputed only for the session's own new events, after the
-      // stored chain has been checked; a tampered log is never re-chained.
-      const { sink, integrity } = loadAuditSink(stateDir);
-      if (integrity === 'tampered') {
-        throw new AuditTamperError(
-          `refusing to save session: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
-            'Overwriting it would destroy the tamper evidence. Nothing was written.',
-        );
-      }
-      for (const event of mine) sink.append({ ...event, prevHash: '', hash: '' });
+      // The read-merge-write below must not interleave with a command that is
+      // mid-transaction, or one of the two would overwrite the other's events.
+      const release = acquireFileLock(stateLockPath(stateDir), {
+        timeoutMs: opts.lockTimeoutMs ?? STATE_LOCK_TIMEOUT_MS,
+      });
+      try {
+        // Re-read the log as it is NOW, verified, and append onto its tail. The
+        // chain is recomputed only for the session's own new events, after the
+        // stored chain has been checked; a tampered log is never re-chained.
+        const { sink, integrity } = loadAuditSink(stateDir);
+        if (integrity === 'tampered') {
+          throw new AuditTamperError(
+            `refusing to save session: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
+              'Overwriting it would destroy the tamper evidence. Nothing was written.',
+          );
+        }
+        for (const event of mine) sink.append({ ...event, prevHash: '', hash: '' });
 
-      const events = sink.read();
-      const target = join(stateDir, 'audit.jsonl');
-      const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync(tmp, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
-      renameSync(tmp, target);
-      persisted = state.auditSink.readVerbatim().length;
+        const events = sink.read();
+        writeFileAtomic(join(stateDir, 'audit.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+        persisted = state.auditSink.readVerbatim().length;
+      } finally {
+        release();
+      }
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Atomic and exclusive writes
+// ---------------------------------------------------------------------------
+
+/** Replace `target` atomically, so a reader never sees an empty or half-written file. */
+function writeFileAtomic(target: string, data: string): void {
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  renameSync(tmp, target);
+}
+
+/**
+ * Create `target` with `data` only if it does not exist yet; never replace one.
+ * The data is written to a temp file first (so nobody reads a half-written file)
+ * and installed with a hard link, which fails if the target exists.
+ *
+ * @returns `true` if this call installed the file, `false` if one was already there.
+ */
+export function publishExclusively(target: string, data: string, mode: number): boolean {
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, data, { mode });
+  try {
+    linkSync(tmp, target);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw err;
+  } finally {
+    unlinkSync(tmp);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State transaction lock
+// ---------------------------------------------------------------------------
+
+/** How long a command waits for another to finish with the state directory. */
+const STATE_LOCK_TIMEOUT_MS = 10_000;
+
+function stateLockPath(stateDir: string): string {
+  return join(stateDir, 'state.lock');
+}
+
+/** Turn a lock timeout into something an operator can act on. */
+function explainLockTimeout(err: unknown, stateDir: string, waitedMs: number): unknown {
+  if (err instanceof FileLockTimeout) {
+    return new Error(
+      `another command is using the state directory ${stateDir}: waited ${waitedMs}ms for ${stateLockPath(stateDir)}. ` +
+        'Retry; if no leasebroker process is running, the lock is left over and can be removed.',
+    );
+  }
+  return err;
+}
+
+/**
+ * Run `fn` as one transaction on the state directory.
+ *
+ * `saveState` rewrites every state file from the snapshot its command loaded. Two
+ * short commands running at once therefore each saved a stale snapshot over the
+ * other's change: with 12 `revoke` and 12 `request` launched together, about half
+ * the revocations and about 37 of 84 audit events were lost, and the audit chain
+ * still verified because each surviving file was internally consistent. So a
+ * command that changes state must load, change and save INSIDE this lock, and the
+ * commands queue instead of overwriting each other.
+ *
+ * It is a lock around the whole command, not around `saveState`: a lock only at
+ * save time would still let both commands load the same snapshot.
+ *
+ * Read-only commands do not need it (writes replace files atomically, so a reader
+ * sees a whole old file or a whole new one). A long-running `serve` never holds
+ * it: it takes it only for the brief merge in `ServeSession.save`.
+ */
+export async function withStateLock<T>(
+  stateDir: string,
+  fn: () => T | Promise<T>,
+  opts: FileLockOptions = {},
+): Promise<T> {
+  ensureDir(stateDir);
+  const timeoutMs = opts.timeoutMs ?? STATE_LOCK_TIMEOUT_MS;
+  let release: () => void;
+  try {
+    release = acquireFileLock(stateLockPath(stateDir), { ...opts, timeoutMs });
+  } catch (err) {
+    throw explainLockTimeout(err, stateDir, timeoutMs);
+  }
+  // process.exit() inside fn skips the finally below; 'exit' handlers still run, and releasing is synchronous.
+  process.once('exit', release);
+  try {
+    return await fn();
+  } finally {
+    process.removeListener('exit', release);
+    release();
+  }
 }

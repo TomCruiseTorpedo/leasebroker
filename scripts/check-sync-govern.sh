@@ -88,7 +88,7 @@ FILES=(
   # a2a — protocol binding and gating
   src/a2a/binding.ts src/a2a/extension.ts src/a2a/gate.ts src/a2a/index.ts
   # cli — shared state handling and the commands that carry no divergent options
-  src/cli/state.ts src/cli/wire.ts
+  src/cli/state.ts src/cli/wire.ts src/cli/file-lock.ts
   src/cli/commands/approve.ts src/cli/commands/deny.ts src/cli/commands/pending.ts
   src/cli/commands/policy.ts src/cli/commands/request.ts src/cli/commands/revoke.ts
   src/cli/commands/serve.ts
