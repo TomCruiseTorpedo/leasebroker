@@ -11,7 +11,7 @@
 
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LeaseRequest, PolicyRule } from '../contract/index.js';
+import type { AuditEvent, LeaseRequest, PolicyRule } from '../contract/index.js';
 import { InMemoryAuditSink, parseStoredAuditJsonl } from '../audit/index.js';
 import type { AuditIntegrity } from '../audit/index.js';
 import { InMemoryPendingStore } from '../audit/index.js';
@@ -20,7 +20,7 @@ import { InMemorySpendLedger, InMemoryDurationLedger } from '../audit/index.js';
 import { generateKeyPair, keyPairFromSeed } from '../signing/index.js';
 import type { KeyPair } from '../signing/index.js';
 import { acquireFileLock, FileLockTimeout } from './file-lock.js';
-import type { FileLockOptions } from './file-lock.js';
+import type { FileLockHandle, FileLockOptions } from './file-lock.js';
 
 // ---------------------------------------------------------------------------
 // State directory resolution
@@ -126,6 +126,7 @@ export function loadPolicyRules(stateDir: string, rulesFilePath?: string): Polic
 }
 
 export function savePolicyRules(stateDir: string, rules: PolicyRule[]): void {
+  assertStillHeld('save the policy', stateDir);
   ensureDir(stateDir);
   writeFileAtomic(join(stateDir, 'policy.json'), JSON.stringify(rules, null, 2));
 }
@@ -371,11 +372,17 @@ export function saveState(state: CliState): void {
         'Archive the audit log manually (e.g. move it aside) to resume with a fresh chain.',
     );
   }
-  saveAuditSink(state.stateDir, state.auditSink);
-  savePendingStore(state.stateDir, state.pendingStore);
+  // Commit point: if this transaction no longer holds the lock, another command may have changed the
+  // state since this one loaded it. Writing now would erase that change, so write nothing.
+  assertStillHeld('save state', state.stateDir);
+  // Order matters because a crash can land between files. Enforcement state goes first and the
+  // audit log last: "revoked in force, not yet in the log" fails safe, while "revoked in the log,
+  // still valid" is false assurance.
   saveRevocationList(state.stateDir, state.revocationList);
+  savePendingStore(state.stateDir, state.pendingStore);
   saveSpendLedger(state.stateDir, state.spendLedger);
   saveDurationLedger(state.stateDir, state.durationLedger);
+  saveAuditSink(state.stateDir, state.auditSink);
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +423,23 @@ export class DiskBackedRevocationList extends InMemoryRevocationList {
     for (const id of ids) {
       if (typeof id === 'string') super.revoke(id);
     }
+  }
+}
+
+/**
+ * Keep events a session could not merge into the log, in a file beside it.
+ *
+ * A session that cannot save (the state lock is held, or the log on disk fails verification) must
+ * not simply lose its events. They are NOT merged into audit.jsonl: it cannot be locked, or cannot
+ * be trusted, right now. Each spill is its own exclusively created file and is reported on stderr.
+ */
+function spillUnsavedEvents(stateDir: string, events: AuditEvent[]): void {
+  const path = join(stateDir, `audit.unsaved.${process.pid}.${Date.now()}.jsonl`);
+  try {
+    publishExclusively(path, events.map((e) => JSON.stringify(e)).join('\n') + '\n', 0o600);
+    process.stderr.write(`leasebroker: ${events.length} audit event(s) could not be saved to the log and were kept in ${path}\n`);
+  } catch (err) {
+    process.stderr.write(`leasebroker: ${events.length} audit event(s) could not be saved and could not be kept: ${(err as Error).message}\n`);
   }
 }
 
@@ -462,29 +486,36 @@ export function openServeSession(
       const mine = state.auditSink.readVerbatim().slice(persisted);
       if (mine.length === 0) return;
 
-      // The read-merge-write below must not interleave with a command that is
-      // mid-transaction, or one of the two would overwrite the other's events.
-      const release = acquireFileLock(stateLockPath(stateDir), {
-        timeoutMs: opts.lockTimeoutMs ?? STATE_LOCK_TIMEOUT_MS,
-      });
       try {
-        // Re-read the log as it is NOW, verified, and append onto its tail. The
-        // chain is recomputed only for the session's own new events, after the
-        // stored chain has been checked; a tampered log is never re-chained.
-        const { sink, integrity } = loadAuditSink(stateDir);
-        if (integrity === 'tampered') {
-          throw new AuditTamperError(
-            `refusing to save session: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
-              'Overwriting it would destroy the tamper evidence. Nothing was written.',
-          );
-        }
-        for (const event of mine) sink.append({ ...event, prevHash: '', hash: '' });
+        // The read-merge-write below must not interleave with a command that is
+        // mid-transaction, or one of the two would overwrite the other's events.
+        const lock = acquireFileLock(stateLockPath(stateDir), {
+          timeoutMs: opts.lockTimeoutMs ?? STATE_LOCK_TIMEOUT_MS,
+        });
+        try {
+          // Re-read the log as it is NOW, verified, and append onto its tail. The
+          // chain is recomputed only for the session's own new events, after the
+          // stored chain has been checked; a tampered log is never re-chained.
+          const { sink, integrity } = loadAuditSink(stateDir);
+          if (integrity === 'tampered') {
+            throw new AuditTamperError(
+              `refusing to save session: audit log at ${join(stateDir, 'audit.jsonl')} fails stored hash-chain verification. ` +
+                'Overwriting it would destroy the tamper evidence. Nothing was written.',
+            );
+          }
+          for (const event of mine) sink.append({ ...event, prevHash: '', hash: '' });
+          assertStillHeld('save the session', stateDir, lock);
 
-        const events = sink.read();
-        writeFileAtomic(join(stateDir, 'audit.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
-        persisted = state.auditSink.readVerbatim().length;
-      } finally {
-        release();
+          const events = sink.read();
+          writeFileAtomic(join(stateDir, 'audit.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+          persisted = state.auditSink.readVerbatim().length;
+        } finally {
+          lock.release();
+        }
+      } catch (err) {
+        // Do not lose the evidence: keep what could not be merged next to the log.
+        spillUnsavedEvents(stateDir, mine);
+        throw err;
       }
     },
   };
@@ -529,6 +560,34 @@ export function publishExclusively(target: string, data: string, mode: number): 
 /** How long a command waits for another to finish with the state directory. */
 const STATE_LOCK_TIMEOUT_MS = 10_000;
 
+/** Thrown by `saveState` when the transaction it belongs to no longer holds the state lock. */
+export class LockLostError extends Error {}
+
+/**
+ * The state-lock handle of the transaction running in this process, if any. `saveState` is the
+ * commit point of every command, so it checks this before writing: a transaction that has lost
+ * its lock may be holding a snapshot another command has since changed, and committing it would
+ * erase that change.
+ */
+let currentTransaction: FileLockHandle | undefined;
+
+/**
+ * Fence a commit: refuse to write unless the lock this work runs under is still ours. Every path that
+ * commits under the state lock must call this immediately before its first write: `saveState`,
+ * `savePolicyRules` (`policy load` writes directly, not through `saveState`) and the serve session's
+ * audit merge. A path that skips it silently loses the protection the others have.
+ *
+ * @param lock the lock to check; defaults to the transaction running in this process, if any.
+ */
+function assertStillHeld(what: string, stateDir: string, lock: FileLockHandle | undefined = currentTransaction): void {
+  if (lock !== undefined && !lock.isHeld()) {
+    throw new LockLostError(
+      `refusing to ${what}: the lock on ${stateDir} was lost while this was running, ` +
+        'so another command may have changed it. Nothing was written; retry.',
+    );
+  }
+}
+
 function stateLockPath(stateDir: string): string {
   return join(stateDir, 'state.lock');
 }
@@ -569,18 +628,21 @@ export async function withStateLock<T>(
 ): Promise<T> {
   ensureDir(stateDir);
   const timeoutMs = opts.timeoutMs ?? STATE_LOCK_TIMEOUT_MS;
-  let release: () => void;
+  let lock: FileLockHandle;
   try {
-    release = acquireFileLock(stateLockPath(stateDir), { ...opts, timeoutMs });
+    lock = acquireFileLock(stateLockPath(stateDir), { ...opts, timeoutMs });
   } catch (err) {
     throw explainLockTimeout(err, stateDir, timeoutMs);
   }
   // process.exit() inside fn skips the finally below; 'exit' handlers still run, and releasing is synchronous.
-  process.once('exit', release);
+  process.once('exit', lock.release);
+  const outer = currentTransaction;
+  currentTransaction = lock;
   try {
     return await fn();
   } finally {
-    process.removeListener('exit', release);
-    release();
+    currentTransaction = outer;
+    process.removeListener('exit', lock.release);
+    lock.release();
   }
 }

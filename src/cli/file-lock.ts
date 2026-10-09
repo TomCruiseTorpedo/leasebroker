@@ -7,16 +7,26 @@
  *
  * ABANDONED LOCKS. A holder that crashes leaves its file behind, so a lock is
  * taken over when it is judged abandoned:
- *   - it has not been touched for `staleMs`, whoever holds it; or
  *   - its holder is on THIS host and in THIS pid namespace and is no longer
- *     running.
- * The second rule is only valid where the pid means something. A pid recorded on
- * another host, or in another pid namespace that shares the directory through a
- * volume, looks dead from here whether or not it is; trusting that would steal
- * the lock from a process that is mid-transaction. Those holders expire by age
- * alone. (A holder that is alive but stalled for longer than `staleMs` is also
- * taken over. The critical sections here are milliseconds, so that means a
- * wedged process, and refusing to wait forever is the safer side.)
+ *     running: taken over at once; or
+ *   - its holder's liveness CANNOT be checked here (another host, another pid
+ *     namespace sharing the directory through a volume, or a record that does
+ *     not parse): taken over once it has not been touched for `staleMs`.
+ * A holder that IS alive on this host is never taken over, however old its lock.
+ * Slow is not dead: taking the lock from a stalled but living process lets two
+ * processes run their read-modify-write at once, and the stalled one then
+ * commits a snapshot taken before the other's change. Measured: a `revoke`
+ * reported success while a live holder was stalled, and the holder's later save
+ * erased it. A waiter instead times out loudly. (Pid reuse can make a dead
+ * holder look alive; the cost is a command that times out until the stale file
+ * is removed, which is the safe side.)
+ *
+ * A pid recorded on another host means nothing here: it looks dead from here
+ * whether or not it is, so those holders expire by age alone.
+ *
+ * FENCING. Because a holder can still lose its lock (a foreign-host holder aged
+ * out, a file removed by hand), the handle can report `isHeld()`. Whoever commits
+ * under the lock should check it immediately before writing, and abort if not.
  *
  * NOT A NETWORK LOCK. Do not put a state directory on a filesystem whose
  * O_EXCL create is not atomic (some NFS configurations).
@@ -62,6 +72,13 @@ export interface FileLockOptions {
 }
 
 export class FileLockTimeout extends Error {}
+
+export interface FileLockHandle {
+  /** Release this acquisition. Removes the file only if it still carries this acquisition's token. */
+  release(): void;
+  /** True while the lock file still carries this acquisition's token. For fencing a commit. */
+  isHeld(): boolean;
+}
 
 interface LockRecord {
   pid: number;
@@ -132,11 +149,14 @@ function abandonedContent(lockPath: string, staleMs: number): string | null {
   }
   const raw = readRaw(lockPath);
   if (raw === null) return null;
-  if (ageMs >= staleMs) return raw;
+  const old = ageMs >= staleMs;
   const record = parseRecord(raw);
-  // Unparseable or empty: a holder between creating the file and writing its record.
-  if (record === null) return null;
-  if (record.host !== hostname() || record.pidns !== ownPidNamespace()) return null;
+  // Unparseable or empty: a holder between creating the file and writing its record, or one that
+  // crashed doing so. Cannot tell which, so only age decides.
+  if (record === null) return old ? raw : null;
+  // Another host or pid namespace: the pid means nothing here, so liveness cannot be checked.
+  if (record.host !== hostname() || record.pidns !== ownPidNamespace()) return old ? raw : null;
+  // Same host and namespace: liveness CAN be checked, and a living holder is never taken over.
   return isAlive(record.pid) ? null : raw;
 }
 
@@ -167,12 +187,11 @@ export function takeOverAbandonedLock(lockPath: string, observed: string): void 
 }
 
 /**
- * Take the lock, waiting up to `timeoutMs`. Returns a function that releases it
- * (idempotent; removes the file only if it is still this process's).
+ * Take the lock, waiting up to `timeoutMs`.
  *
  * @throws {FileLockTimeout} if the lock could not be taken in time.
  */
-export function acquireFileLock(lockPath: string, opts: FileLockOptions = {}): () => void {
+export function acquireFileLock(lockPath: string, opts: FileLockOptions = {}): FileLockHandle {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
   const deadline = Date.now() + timeoutMs;
@@ -203,12 +222,18 @@ export function acquireFileLock(lockPath: string, opts: FileLockOptions = {}): (
     sleepSync(10);
   }
 
-  return () => {
-    try {
-      const raw = readRaw(lockPath);
-      if (raw !== null && parseRecord(raw)?.token === me.token) unlinkSync(lockPath);
-    } catch {
-      /* already gone */
-    }
+  const isHeld = (): boolean => {
+    const raw = readRaw(lockPath);
+    return raw !== null && parseRecord(raw)?.token === me.token;
+  };
+  return {
+    release(): void {
+      try {
+        if (isHeld()) unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    },
+    isHeld,
   };
 }

@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -27,10 +28,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireFileLock, FileLockTimeout } from './file-lock.js';
 import {
+  LockLostError,
   loadOrCreateKeyPair,
   loadState,
   openServeSession,
   publishExclusively,
+  savePolicyRules,
   saveState,
   withStateLock,
 } from './state.js';
@@ -66,7 +69,7 @@ describe('withStateLock', () => {
     await withStateLock(dir, () => {
       expect(() => acquireFileLock(lockPath(), { timeoutMs: 100 })).toThrow(FileLockTimeout);
     });
-    acquireFileLock(lockPath(), { timeoutMs: 100 })(); // control: free once it has finished
+    acquireFileLock(lockPath(), { timeoutMs: 100 }).release(); // control: free once it has finished
   });
 
   it('releases the lock when the function succeeds', async () => {
@@ -97,14 +100,91 @@ describe('withStateLock', () => {
   });
 
   it('says what is wrong when another command holds the lock too long', async () => {
-    const release = acquireFileLock(lockPath());
+    const held = acquireFileLock(lockPath());
     try {
       await expect(withStateLock(dir, () => 1, { timeoutMs: 100 })).rejects.toThrow(
         /another command is using the state directory/,
       );
     } finally {
-      release();
+      held.release();
     }
+  });
+});
+
+// A transaction can lose its lock (a holder on another host that aged out, a file removed by hand).
+// Another command may then have changed the state since this one loaded it, and committing the old
+// snapshot would erase that change. Measured before the lock rule was tightened: a `revoke` reported
+// success while a live holder was stalled, then the holder's save erased the revocation.
+describe('saveState inside a transaction is fenced by the lock', () => {
+  const someoneElse = () =>
+    JSON.stringify({ pid: process.pid, host: 'some-other-host', pidns: null, token: 'new-holder' });
+
+  it('refuses to write if the lock was lost, and writes nothing', async () => {
+    await expect(
+      withStateLock(dir, () => {
+        const state = loadState(dir);
+        state.revocationList.revoke('lease-1');
+        writeFileSync(lockPath(), someoneElse()); // the lock is taken from us mid-transaction
+        saveState(state);
+      }),
+    ).rejects.toThrow(LockLostError);
+
+    expect(existsSync(join(dir, 'revoked.json'))).toBe(false);
+  });
+
+  // `policy load` writes policy.json directly, not through saveState, so it needs the same fence.
+  it('also fences a policy write made inside the transaction', async () => {
+    await expect(
+      withStateLock(dir, () => {
+        writeFileSync(lockPath(), someoneElse());
+        savePolicyRules(dir, [
+          { ruleId: 'r', effect: 'allow', capabilityKind: 'fs.read', paths: ['/data/**'] },
+        ]);
+      }),
+    ).rejects.toThrow(LockLostError);
+
+    expect(existsSync(join(dir, 'policy.json'))).toBe(false);
+  });
+
+  it('writes a policy outside any transaction as before', () => {
+    savePolicyRules(dir, [{ ruleId: 'r', effect: 'allow', capabilityKind: 'fs.read', paths: ['/data/**'] }]);
+    expect(existsSync(join(dir, 'policy.json'))).toBe(true);
+  });
+
+  it("leaves the new holder's lock in place on the way out", async () => {
+    await withStateLock(dir, () => {
+      writeFileSync(lockPath(), someoneElse());
+    });
+    expect(readFileSync(lockPath(), 'utf8')).toBe(someoneElse());
+  });
+
+  it('does not fence a save that is not part of a transaction', () => {
+    const state = loadState(dir);
+    state.revocationList.revoke('lease-1');
+    expect(() => saveState(state)).not.toThrow();
+  });
+});
+
+// saveState writes several files and a crash can land between them. What matters is which half-state
+// is left: "the log says revoked but the lease is still valid" is false assurance; "the lease is
+// revoked but the log has no record yet" fails safe. So enforcement state goes first, evidence last.
+describe('saveState writes enforcement state before the audit log', () => {
+  it('has the revocation in force even if the audit write then fails', () => {
+    const state = loadState(dir);
+    state.revocationList.revoke('lease-1');
+    state.auditSink.append({
+      type: 'revocation',
+      at: new Date().toISOString(),
+      leaseId: 'lease-1',
+      detail: {},
+      prevHash: '',
+      hash: '',
+    });
+    mkdirSync(join(dir, 'audit.jsonl')); // the audit write will fail: its target is a directory
+
+    expect(() => saveState(state)).toThrow();
+
+    expect(JSON.parse(readFileSync(join(dir, 'revoked.json'), 'utf8'))).toContain('lease-1');
   });
 });
 
@@ -119,13 +199,66 @@ describe('the serve session save', () => {
       hash: '',
     });
 
-    const release = acquireFileLock(lockPath()); // another command is mid-transaction
+    const held = acquireFileLock(lockPath()); // another command is mid-transaction
     expect(() => session.save()).toThrow(FileLockTimeout);
     expect(existsSync(join(dir, 'audit.jsonl'))).toBe(false); // nothing written while it was locked out
 
-    release();
+    held.release();
     session.save(); // control: the same save goes through once the lock is free
     expect(readFileSync(join(dir, 'audit.jsonl'), 'utf8')).toContain('"from":"session"');
+  });
+
+  // A session that cannot save must not simply lose its events. They are kept in a spill file next to
+  // the log (never merged into it, since it cannot be trusted or locked right now) and the path is
+  // reported, so an operator can recover them.
+  const spillFiles = () => readdirSync(dir).filter((f) => f.startsWith('audit.unsaved.'));
+  const sessionEvent = () => ({
+    type: 'denial' as const,
+    at: new Date().toISOString(),
+    detail: { from: 'session' },
+    prevHash: '',
+    hash: '',
+  });
+
+  it('keeps its unsaved events in a spill file when it cannot take the lock', () => {
+    const session = openServeSession(dir, { lockTimeoutMs: 100 });
+    session.state.auditSink.append(sessionEvent());
+    const held = acquireFileLock(lockPath());
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(() => session.save()).toThrow(FileLockTimeout);
+    held.release();
+
+    expect(existsSync(join(dir, 'audit.jsonl'))).toBe(false);
+    expect(spillFiles()).toHaveLength(1);
+    expect(readFileSync(join(dir, spillFiles()[0]!), 'utf8')).toContain('"from":"session"');
+  });
+
+  it('keeps its unsaved events in a spill file when the log on disk is tampered with', () => {
+    const state = loadState(dir);
+    state.auditSink.append(sessionEvent());
+    saveState(state);
+    const session = openServeSession(dir);
+    session.state.auditSink.append({ ...sessionEvent(), detail: { from: 'late' } });
+    const path = join(dir, 'audit.jsonl');
+    const line = JSON.parse(readFileSync(path, 'utf8').split('\n')[0]!) as { detail: Record<string, unknown> };
+    line.detail = { tampered: true };
+    const tampered = JSON.stringify(line) + '\n';
+    writeFileSync(path, tampered);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(() => session.save()).toThrow();
+
+    expect(readFileSync(path, 'utf8')).toBe(tampered); // the evidence is untouched
+    expect(spillFiles()).toHaveLength(1);
+    expect(readFileSync(join(dir, spillFiles()[0]!), 'utf8')).toContain('"from":"late"');
+  });
+
+  it('writes no spill file when the save succeeds', () => {
+    const session = openServeSession(dir);
+    session.state.auditSink.append(sessionEvent());
+    session.save();
+    expect(spillFiles()).toEqual([]);
   });
 });
 
